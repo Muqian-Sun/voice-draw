@@ -41,7 +41,7 @@ README.md
 1. chore: 初始化 monorepo 骨架（frontend/backend）+ README 初版 ✅(GH PR#2)
 2. feat: 绘图 DSL 类型与 zod Schema（协议 §1.3-1.4）✅(GH PR#3)
 3. feat: 场景图 + DSL 解释器（create/style/move/delete）✅(GH PR#4)
-4. feat: 事务式 undo/redo（场景快照栈，规格 §5.4）
+4. feat: 事务式 undo/redo（场景快照栈，规格 §5.4）✅(GH PR#5)
 5. feat: 文本调试面板（输入 DSL/自然语言 + 事件日志）
 
 **Day 2（M1 语音链路）**
