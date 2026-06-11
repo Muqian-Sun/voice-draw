@@ -205,6 +205,30 @@ export function parseOrdinal(token: string): number | 'first' | 'last' | null {
   return n !== null && n >= 1 ? n : null
 }
 
+// ---------- 动词表（规格 §4.2 模板清单；§3.3 拼音回退词典也引用） ----------
+
+/**
+ * 按意图分组的动词词条，唯一来源。模板语义（哪个动词配哪些槽位）在路由器（规格 §4.2），
+ * 此处仅声明词形。"来"同时在 IGNORE_WORDS，作 T1 动词时不剔除（§2.5 条件条目）。
+ */
+export const VERB_WORDS = {
+  create: ['画', '添加', '加', '来', '写'],
+  move: ['移动', '移', '挪', '拖'],
+  resize: ['放大', '缩小', '变', '放', '缩'],
+  style: ['涂成', '变成', '改成', '换成', '涂'],
+  delete: ['删掉', '删除', '去掉', '移除', '擦掉'],
+  undo: ['撤销', '撤回', '回退'],
+  redo: ['重做', '恢复'],
+  clear: ['清空', '全部删掉', '重新开始', '重画'],
+  rotate: ['旋转', '转'],
+  rename: ['命名为', '叫'],
+  export: ['保存', '导出', '下载'],
+  focus: ['选中', '选择'],
+} as const
+
+/** 全部动词词形（拼音回退词典用） */
+export const ALL_VERB_WORDS: readonly string[] = Object.values(VERB_WORDS).flat()
+
 // ---------- 中文数字解析（§2.4 显式数字 / §2.7 序数共用） ----------
 
 const CN_DIGITS: Record<string, number> = {
