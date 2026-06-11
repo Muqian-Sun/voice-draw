@@ -3,6 +3,9 @@ import { parseOps, type Op } from './dsl'
 import { createHistory, executeWithHistory, type HistoryOutcome, type HistoryState } from './engine/history'
 import { CanvasStage } from './components/CanvasStage'
 import { DebugPanel, type LogEntry } from './components/DebugPanel'
+import { correctTranscript } from './nlu/correction'
+import { decideMode, parseRule } from './nlu/rules'
+import { CONFIRM_YES_WORDS } from './shared/lexicon'
 import { STATE_LABELS } from './voice/fsm'
 import { useVoice } from './voice/useVoice'
 
@@ -48,7 +51,10 @@ export default function App() {
     [pushLog],
   )
 
-  /** 文本入口：DSL JSON 直接执行；自然语言待理解层接入（计划 PR #10~#13） */
+  // 破坏性操作确认窗口（协议 §4.3）：语音 FSM 子态接入前由文本入口承担同语义
+  const pendingConfirmRef = useRef<Op[] | null>(null)
+
+  /** 文本入口：DSL JSON 直接执行；自然语言走 纠错 → 规则快路径（升级 LLM 计划 PR#13） */
   const execText = useCallback(
     (text: string) => {
       const trimmed = text.trim()
@@ -60,7 +66,45 @@ export default function App() {
         }
         return
       }
-      pushLog('warn', `「${trimmed}」：自然语言理解将在规则层/LLM PR 接入（计划 #10~#13），当前请输入 DSL JSON（点「示例」查看格式）`)
+
+      // 确认窗口期：命中肯定词执行，其余任何输入视为否定（规格 §2.6 保守策略）
+      if (pendingConfirmRef.current !== null) {
+        const pending = pendingConfirmRef.current
+        pendingConfirmRef.current = null
+        if (CONFIRM_YES_WORDS.includes(trimmed)) {
+          pushLog('info', '🔊 已确认')
+          execOps(pending)
+        } else {
+          pushLog('info', '🔊 已取消')
+        }
+        return
+      }
+
+      const corr = correctTranscript(trimmed)
+      if (corr.applied.length > 0) {
+        pushLog('info', `纠错：「${corr.original}」→「${corr.corrected}」`)
+      }
+      const scene = historyRef.current.scene
+      const r = parseRule(corr.corrected, {
+        names: scene.objects.map((o) => o.name).filter((n): n is string => n !== undefined && n.length > 0),
+        hasFocus: scene.focusId !== undefined,
+      })
+      if (r === null) {
+        pushLog('warn', `规则未命中 → 升级 LLM（mode=${decideMode(corr.corrected)}，计划 PR#13 接入）`)
+        return
+      }
+      pushLog('info', `规则命中 ${r.template}（${r.latencyMs.toFixed(1)}ms）`)
+      if (r.intent === 'confirm-pending') {
+        pendingConfirmRef.current = r.ops
+        pushLog('warn', `🔊 ${r.say}（输入「确认」执行，其他任意输入取消）`)
+        return
+      }
+      if (r.intent === 'clarify') {
+        pushLog('warn', `🔊 ${r.say}`)
+        return
+      }
+      if (r.say !== undefined) pushLog('info', `🔊 ${r.say}`)
+      execOps(r.ops)
     },
     [execOps, pushLog],
   )

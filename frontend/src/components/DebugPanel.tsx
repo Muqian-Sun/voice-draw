@@ -49,7 +49,7 @@ export function DebugPanel({ entries, onSubmit, onUndo, onRedo, onClear }: Debug
       <textarea
         className="debug-input"
         value={text}
-        placeholder={'输入 DSL JSON 或自然语言，⌘/Ctrl+Enter 执行\n例：{"op":"create","shape":"circle","fill":"#FF4136"}'}
+        placeholder={'输入自然语言或 DSL JSON，⌘/Ctrl+Enter 执行\n例：画一个红色的圆 ｜ 把它变大一点 ｜ 清空画布'}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
