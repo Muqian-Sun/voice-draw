@@ -66,7 +66,7 @@ README.md
 18. feat: plan 模式创作拆解（自动编组 + desc 进度播报）✅(GH PR#27)
 
 **Day 5（M4 优化+交付）**
-19. feat: partial 投机解析 + 延迟/成本埋点看板
+19. feat: partial 投机解析 + 延迟/成本埋点看板 ✅(GH PR#28)
 20. docs+test: Golden 30 句自动化回归 + README 终版 + 实现状态定稿 + demo 视频链接
 
 弹性：超前则 P2 能力各追加独立小 PR；延期可降级 17/19（状态文档如实记录原因），**PR 20 文档定稿绝不挤掉**。

@@ -7,7 +7,8 @@ import { DebugPanel, type LogEntry } from './components/DebugPanel'
 import { buildAmbiguityClarify, matchExpecting, type ExpectingItem } from './nlu/clarify'
 import { correctTranscript } from './nlu/correction'
 import { parseWithLlm } from './nlu/llm'
-import { decideMode, extractPlanSubject, parseRule } from './nlu/rules'
+import { decideMode, extractPlanSubject, parseRule, type RuleContext } from './nlu/rules'
+import { SpeculativeParser } from './nlu/speculate'
 import { CONFIRM_YES_WORDS } from './shared/lexicon'
 import { CONFIRM_WINDOW_MS, STATE_LABELS, type VoiceEvent, type VoiceState } from './voice/fsm'
 import { GatewayTts, TtsOrchestrator, WebSpeechTts } from './voice/tts'
@@ -139,6 +140,24 @@ export default function App() {
   const recentRef = useRef<Array<{ utterance: string; summary: string }>>([])
   const lastTxRef = useRef<{ utterance: string; opCount: number } | undefined>(undefined)
 
+  // 投机解析（协议 §4.1）：partial 预解析缓存，final 一致直接复用
+  const specRef = useRef(new SpeculativeParser())
+  // 延迟/成本埋点看板
+  const [metrics, setMetrics] = useState({ rule: 0, llmParse: 0, llmPlan: 0, fails: 0, last: '—' })
+
+  const ruleCtx = useCallback((): RuleContext => {
+    const scene = historyRef.current.scene
+    return {
+      // 对象名 + 组名都参与 byName 热匹配（"把雪人移到右边"）
+      names: [
+        ...new Set(
+          scene.objects.flatMap((o) => [o.name, o.groupId]).filter((n): n is string => n !== undefined && n.length > 0),
+        ),
+      ],
+      hasFocus: scene.focusId !== undefined,
+    }
+  }, [])
+
   // 歧义澄清窗口（规格 §5.7）：engine=快匹配后 byId 补全原 Op；llm=联合原话重新解析
   type PendingClarify =
     | { kind: 'engine'; remainingOps: Op[]; expecting: ExpectingItem[]; sayText?: string }
@@ -215,11 +234,18 @@ export default function App() {
         return
       }
 
-      const corr = correctTranscript(trimmed)
-      if (corr.applied.length > 0) {
-        pushLog('info', `纠错：「${corr.original}」→「${corr.corrected}」`)
+      // 投机解析（§4.1）：final 与最后一次 partial 一致 → 复用预解析（纠错+规则匹配零耗时）
+      const spec = specRef.current.takeForFinal(trimmed)
+      let corrected: string
+      if (spec !== null) {
+        corrected = spec.corrected
+        if (spec.original !== spec.corrected) pushLog('info', `纠错（投机预算）：「${spec.original}」→「${spec.corrected}」`)
+      } else {
+        const corr = correctTranscript(trimmed)
+        if (corr.applied.length > 0) pushLog('info', `纠错：「${corr.original}」→「${corr.corrected}」`)
+        corrected = corr.corrected
       }
-      let utterance = corr.corrected
+      let utterance = corrected
 
       // 澄清窗口期：先与 expecting 包含匹配（§5.7 快匹配）。
       // 仅短回答参与（≤8 字），防止新长指令里偶含候选词被误吞；未命中即关窗按新指令解析
@@ -242,34 +268,34 @@ export default function App() {
         }
       }
 
-      const scene = historyRef.current.scene
-      const r = parseRule(utterance, {
-        // 对象名 + 组名都参与 byName 热匹配（"把雪人移到右边"）
-        names: [
-          ...new Set(
-            scene.objects.flatMap((o) => [o.name, o.groupId]).filter((n): n is string => n !== undefined && n.length > 0),
-          ),
-        ],
-        hasFocus: scene.focusId !== undefined,
-      })
+      // 投机缓存的规则结果仅在话语未被澄清联合改写时可复用
+      const specReused = spec !== null && utterance === spec.corrected
+      const r = specReused ? spec.rule : parseRule(utterance, ruleCtx())
       if (r === null) {
         const mode = decideMode(utterance)
         pushLog('info', `规则未命中 → 升级 LLM（mode=${mode}）…`)
         void (async () => {
           const llm = await parseWithLlm(utterance, mode, {
             scene: historyRef.current.scene,
-            asrAlternatives: corr.applied.length > 0 ? [corr.original] : [],
+            asrAlternatives: utterance !== trimmed ? [trimmed] : [],
             recent: recentRef.current,
             lastTransaction: lastTxRef.current,
           })
           if (!llm.ok) {
             pushLog('error', `LLM 解析失败：${llm.error}`)
+            setMetrics((m) => ({ ...m, fails: m.fails + 1, last: 'LLM 失败' }))
             advance(false)
             say('没听懂，请换个说法')
             return
           }
           const res = llm.result
           pushLog('info', `LLM 命中 ${res.source}（${res.latencyMs.toFixed(0)}ms，confidence ${res.confidence.toFixed(2)}）`)
+          setMetrics((m) => ({
+            ...m,
+            llmParse: m.llmParse + (res.source === 'llm-parse' ? 1 : 0),
+            llmPlan: m.llmPlan + (res.source === 'llm-plan' ? 1 : 0),
+            last: `${res.source}·${(res.latencyMs / 1000).toFixed(1)}s`,
+          }))
           if (res.intent === 'clarify') {
             advance(false)
             // LLM 给出 expecting → 开快匹配窗口，命中后联合原话重新解析（协议 §2.3）
@@ -303,7 +329,8 @@ export default function App() {
         })()
         return
       }
-      pushLog('info', `规则命中 ${r.template}（${r.latencyMs.toFixed(1)}ms）`)
+      pushLog('info', `规则命中 ${r.template}（${r.latencyMs.toFixed(1)}ms${specReused ? '，投机预解析复用' : ''}）`)
+      setMetrics((m) => ({ ...m, rule: m.rule + 1, last: `${r.template}·${r.latencyMs.toFixed(1)}ms${specReused ? '·投机' : ''}` }))
       if (r.intent === 'confirm-pending') {
         pendingConfirmRef.current = r.ops
         pushLog('warn', '确认窗口：输入/说「确认」执行，其他任意输入取消')
@@ -319,7 +346,7 @@ export default function App() {
       advance(true)
       if (speakOutcome(execOps(r.ops), r.say, r.ops)) recordSuccess(utterance, r.ops)
     },
-    [execOps, pushLog, recordSuccess, say],
+    [execOps, pushLog, recordSuccess, ruleCtx, say],
   )
 
   // 控制台入口与面板共用同一执行通道
@@ -334,8 +361,12 @@ export default function App() {
     }
   }, [execOps, execText])
 
-  // 语音 final → 同一理解通道（纠错 → 规则 → LLM），与调试面板共用
-  const voice = useVoice({ onLog: pushLog, onUtterance: (text) => execText(text) })
+  // 语音 final → 同一理解通道（纠错 → 规则 → LLM），与调试面板共用；partial → 投机预解析
+  const voice = useVoice({
+    onLog: pushLog,
+    onUtterance: (text) => execText(text),
+    onPartial: (text) => specRef.current.onPartial(text, ruleCtx()),
+  })
   voiceApiRef.current = { dispatch: voice.dispatch, setTtsActive: voice.setTtsActive, getState: voice.getState }
 
   const scene = history.scene
@@ -354,6 +385,12 @@ export default function App() {
         </button>
         <span className="status-pill">状态 {STATE_LABELS[voice.state]}</span>
         <span className="status-pill">ASR {voice.providerName}</span>
+        <span className="status-pill" title="规则命中 / LLM 调用（parse+plan）/ 投机命中率 / 最近一次解析来源与延迟">
+          规则 {metrics.rule} ｜ LLM {metrics.llmParse + metrics.llmPlan}
+          {specRef.current.stats.speculated > 0 &&
+            ` ｜ 投机 ${specRef.current.stats.hits}/${specRef.current.stats.hits + specRef.current.stats.misses}`}
+          ｜ 最近 {metrics.last}
+        </span>
         <span className="status-pill">
           对象 {scene.objects.length} ｜ 焦点 {scene.focusId ?? '无'} ｜ 撤销 {history.undoStack.length} / 重做{' '}
           {history.redoStack.length}
