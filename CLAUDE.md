@@ -63,7 +63,7 @@ README.md
 15. feat: TTS 反馈编排（豆包大模型语音合成 2.0 + speechSynthesis 兜底、半双工互斥）✅(GH PR#23,#25)
 16. feat: 破坏性操作语音确认（confirm-pending，协议 §4.3）✅(GH PR#24)
 17. feat: 歧义澄清多轮（AMBIGUOUS_TARGET + expecting 快匹配，规格 §5.7）✅(GH PR#26)
-18. feat: plan 模式创作拆解（自动编组 + desc 进度播报）
+18. feat: plan 模式创作拆解（自动编组 + desc 进度播报）✅(GH PR#27)
 
 **Day 5（M4 优化+交付）**
 19. feat: partial 投机解析 + 延迟/成本埋点看板

@@ -98,8 +98,8 @@ for (const [w, vec] of Object.entries(DIRECTION_VECTORS)) addVocab(w, (t) => ({ 
 addVocab('顺时针', (t) => ({ kind: 'rotdir', text: t, sign: 1 }))
 addVocab('逆时针', (t) => ({ kind: 'rotdir', text: t, sign: -1 }))
 for (const w of IGNORE_WORDS) addVocab(w, (t) => ({ kind: 'ignore', text: t }))
-// 结构虚词与模板内可自由消费的填充词
-for (const w of ['画布', '图片', ...'的地在到向往朝是为成个只条根颗第度步']) addVocab(w, (t) => ({ kind: 'func', text: t }))
+// 结构虚词与模板内可自由消费的填充词（含常见量词与"带"类介词）
+for (const w of ['画布', '图片', ...'的地在到向往朝是为成个只条根颗间朵棵座幅张带第度步']) addVocab(w, (t) => ({ kind: 'func', text: t }))
 
 const MAX_VOCAB_LEN = Math.max(...[...VOCAB.keys()].map((w) => w.length))
 
@@ -630,6 +630,25 @@ export function parseRule(utterance: string, ctx: RuleContext = {}): RuleParseRe
 
 const PLAN_KEYWORDS = ['一幅', '一张', '一个场景', '风景']
 const CONNECTOR_RE = /然后|接着|再/g
+
+/**
+ * 提取创作话术的主名词（"画一个雪人"→"雪人"），作 llm-plan 自动编组的组名（§5.1）。
+ * 取最长的连续未知 token 段（词表外的内容词正是创作主题）；无则 null。
+ */
+export function extractPlanSubject(utterance: string): string | null {
+  const tokens = tokenize(utterance)
+  let best = ''
+  let cur = ''
+  for (const t of tokens) {
+    if (t.kind === 'unknown') {
+      cur += t.text
+      if (cur.length > best.length) best = cur
+    } else {
+      cur = ''
+    }
+  }
+  return best.length > 0 ? best : null
+}
 
 export function decideMode(utterance: string): 'parse' | 'plan' {
   if (PLAN_KEYWORDS.some((k) => utterance.includes(k))) return 'plan'

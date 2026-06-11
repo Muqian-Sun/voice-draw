@@ -59,7 +59,12 @@ export function resolveTarget(state: SceneState, sel: TargetSelector): ResolveRe
   }
   if ('byName' in sel) {
     const hits = state.objects.filter((o) => o.name === sel.byName)
-    if (hits.length === 0) return { ok: false, error: err('TARGET_NOT_FOUND', `画布上没有「${sel.byName}」`) }
+    if (hits.length === 0) {
+      // 名称也可指组（"把雪人移到右边"）：命中任一成员，几何类 Op 经组提升作用整组（§5.6）
+      const member = state.objects.find((o) => o.groupId === sel.byName)
+      if (member !== undefined) return { ok: true, obj: member }
+      return { ok: false, error: err('TARGET_NOT_FOUND', `画布上没有「${sel.byName}」`) }
+    }
     if (hits.length > 1)
       return {
         ok: false,
@@ -73,10 +78,13 @@ export function resolveTarget(state: SceneState, sel: TargetSelector): ResolveRe
   }
   // byQuery：按 shape/fill 过滤，createdSeq 排序后取 ordinal
   const q = sel.byQuery
-  const hits = state.objects
+  let hits = state.objects
     .filter((o) => (q.shape === undefined || o.shape === q.shape))
     .filter((o) => (q.fill === undefined || o.fill?.toLowerCase() === q.fill.toLowerCase()))
     .sort((a, b) => a.createdSeq - b.createdSeq)
+  // §5.6：组内外都有命中时优先组外独立对象
+  const ungrouped = hits.filter((o) => o.groupId === undefined)
+  if (ungrouped.length > 0 && ungrouped.length < hits.length) hits = ungrouped
   if (hits.length === 0) return { ok: false, error: err('TARGET_NOT_FOUND', '画布上没有符合条件的图形') }
   if (q.ordinal !== undefined) {
     const idx = q.ordinal === 'first' ? 0 : q.ordinal === 'last' ? hits.length - 1 : q.ordinal - 1
@@ -96,6 +104,42 @@ export function resolveTarget(state: SceneState, sel: TargetSelector): ResolveRe
 const bboxOf = (o: SceneObject): BBox => {
   const [x, y, w, h] = getBBox(o)
   return { x, y, w, h }
+}
+
+// ---------- group 引用语义（§5.6） ----------
+
+/** 几何类 Op（move/resize/rotate/delete/zorder）目标命中组内成员时提升为整组 */
+function membersOf(state: SceneState, obj: SceneObject): SceneObject[] {
+  if (obj.groupId === undefined) return [obj]
+  return state.objects.filter((o) => o.groupId === obj.groupId)
+}
+
+function unionBBox(objs: SceneObject[]): BBox {
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  for (const o of objs) {
+    const b = bboxOf(o)
+    minX = Math.min(minX, b.x)
+    minY = Math.min(minY, b.y)
+    maxX = Math.max(maxX, b.x + b.w)
+    maxY = Math.max(maxY, b.y + b.h)
+  }
+  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY }
+}
+
+/** 批量修补对象 + 设置焦点（修改类操作焦点跟随，§5.1） */
+function patchMany(
+  state: SceneState,
+  patches: ReadonlyMap<string, Partial<SceneObject>>,
+  focusId: string,
+): SceneState {
+  return {
+    ...state,
+    objects: state.objects.map((o) => (patches.has(o.id) ? { ...o, ...patches.get(o.id) } : o)),
+    focusId,
+  }
 }
 
 // ---------- 尺寸与几何（规格 §2.4 特征尺寸换算 + 相对尺寸维度规则） ----------
@@ -301,34 +345,39 @@ function execOp(state: SceneState, op: Op): OpResult {
     case 'move': {
       const t = resolveTarget(state, op.target)
       if (!t.ok) return t
-      const b = bboxOf(t.obj)
-      const cur = getCenter(t.obj)
+      const members = membersOf(state, t.obj) // 组提升（§5.6）：整组一起移
+      const b = members.length === 1 ? bboxOf(t.obj) : unionBBox(members)
+      const cur = { x: b.x + b.w / 2, y: b.y + b.h / 2 }
       let desired: Point
       if (op.delta) {
         desired = { x: cur.x + op.delta[0], y: cur.y + op.delta[1] }
       } else {
         const to = op.to!
-        // move.to 解析与 create.at 一致（目标对象的 bbox 尺寸参与外贴/内贴计算）
+        // move.to 解析与 create.at 一致（目标（组）bbox 尺寸参与外贴/内贴计算）
         const pos = resolvePosition(state, to, b.w, b.h)
         if (!pos.ok) return pos
         desired = pos.point
       }
       const c = clampCenter(desired.x, desired.y, b.w, b.h)
+      const dx = c.x - cur.x
+      const dy = c.y - cur.y
+      const patches = new Map(members.map((m) => [m.id, { x: m.x + dx, y: m.y + dy }]))
       return {
         ok: true,
-        state: patchObject(state, t.obj.id, { x: t.obj.x + (c.x - cur.x), y: t.obj.y + (c.y - cur.y) }),
-        ...(c.clamped ? { notice: `${t.obj.id} 已拉回画布内（§5.5 clamp）` } : {}),
+        state: patchMany(state, patches, t.obj.id),
+        ...(c.clamped ? { notice: `${t.obj.groupId ?? t.obj.id} 已拉回画布内（§5.5 clamp）` } : {}),
       }
     }
 
     case 'delete': {
       const t = resolveTarget(state, op.target)
       if (!t.ok) return t
+      const ids = new Set(membersOf(state, t.obj).map((m) => m.id)) // 组提升：整组删除
       return {
         ok: true,
         state: {
           ...state,
-          objects: state.objects.filter((o) => o.id !== t.obj.id),
+          objects: state.objects.filter((o) => !ids.has(o.id)),
           focusId: undefined, // 焦点规则 §5.1：delete → 焦点清空
         },
       }
@@ -342,6 +391,41 @@ function execOp(state: SceneState, op: Op): OpResult {
       const t = resolveTarget(state, op.target)
       if (!t.ok) return t
       const o = t.obj
+      const members = membersOf(state, o)
+      if (members.length > 1) {
+        // 组提升（§5.6）：等比缩放——成员几何缩放 + 成员中心绕组中心收放
+        const gb = unionBBox(members)
+        const gc = { x: gb.x + gb.w / 2, y: gb.y + gb.h / 2 }
+        let s: number
+        if (op.scale !== undefined) {
+          s = op.scale
+        } else {
+          const to = op.to!
+          const w = resolveSize(state, to.width, NaN, 'width')
+          if (!w.ok) return w
+          const h = resolveSize(state, to.height, NaN, 'height')
+          if (!h.ok) return h
+          s = !Number.isNaN(w.v) ? w.v / gb.w : h.v / gb.h
+        }
+        if (!Number.isFinite(s) || s <= 0) return { ok: false, error: err('INVALID_OP', 'resize 目标尺寸无效') }
+        const nb = { x: gc.x - (gb.w * s) / 2, y: gc.y - (gb.h * s) / 2, w: gb.w * s, h: gb.h * s }
+        const c = clampCenter(gc.x, gc.y, nb.w, nb.h)
+        const patches = new Map(
+          members.map((m) => [
+            m.id,
+            {
+              ...scaleGeometry(pickGeometry(m), s),
+              x: gc.x + (m.x - gc.x) * s + (c.x - gc.x),
+              y: gc.y + (m.y - gc.y) * s + (c.y - gc.y),
+            },
+          ]),
+        )
+        return {
+          ok: true,
+          state: patchMany(state, patches, o.id),
+          ...(c.clamped ? { notice: `${o.groupId} 已拉回画布内（§5.5 clamp）` } : {}),
+        }
+      }
       const b = bboxOf(o)
       let patch: Partial<SceneObject>
       if (op.scale !== undefined) {
@@ -387,8 +471,28 @@ function execOp(state: SceneState, op: Op): OpResult {
     case 'rotate': {
       const t = resolveTarget(state, op.target)
       if (!t.ok) return t
-      const rotation = (((t.obj.rotation + op.degrees) % 360) + 360) % 360
-      return { ok: true, state: patchObject(state, t.obj.id, { rotation }) }
+      const members = membersOf(state, t.obj)
+      const norm = (r: number) => ((r % 360) + 360) % 360
+      if (members.length > 1) {
+        // 组提升：成员中心绕组中心旋转 + 各自自转
+        const gb = unionBBox(members)
+        const gc = { x: gb.x + gb.w / 2, y: gb.y + gb.h / 2 }
+        const rad = (op.degrees * Math.PI) / 180
+        const cos = Math.cos(rad)
+        const sin = Math.sin(rad)
+        const patches = new Map(
+          members.map((m) => [
+            m.id,
+            {
+              x: gc.x + (m.x - gc.x) * cos - (m.y - gc.y) * sin,
+              y: gc.y + (m.x - gc.x) * sin + (m.y - gc.y) * cos,
+              rotation: norm(m.rotation + op.degrees),
+            },
+          ]),
+        )
+        return { ok: true, state: patchMany(state, patches, t.obj.id) }
+      }
+      return { ok: true, state: patchObject(state, t.obj.id, { rotation: norm(t.obj.rotation + op.degrees) }) }
     }
 
     case 'rename': {
@@ -410,6 +514,31 @@ function execOp(state: SceneState, op: Op): OpResult {
       const t = resolveTarget(state, op.target)
       if (!t.ok) return t
       const o = t.obj
+      const members = membersOf(state, o)
+      if (members.length > 1) {
+        // 组提升：整组作为图层块整体移动，保持组内相对顺序
+        const sortedMembers = [...members].sort((a, b) => a.z - b.z)
+        const outside = state.objects.filter((x) => x.groupId !== o.groupId).map((x) => x.z)
+        const blockMin = sortedMembers[0].z
+        const blockMax = sortedMembers[sortedMembers.length - 1].z
+        // anchor：块将落在 (anchor, anchor+1) 开区间内，组内顺序用分数偏移保持
+        let anchor: number | null = null
+        if (op.to === 'front') {
+          anchor = outside.length > 0 ? Math.max(...outside) : null
+        } else if (op.to === 'back') {
+          anchor = outside.length > 0 ? Math.min(...outside) - 1 : null
+        } else if (op.to === 'forward') {
+          const above = outside.filter((z) => z > blockMax)
+          anchor = above.length > 0 ? Math.min(...above) : null
+        } else {
+          const below = outside.filter((z) => z < blockMin)
+          anchor = below.length > 0 ? Math.max(...below) - 1 : null
+        }
+        if (anchor === null) return { ok: true, state: patchObject(state, o.id, {}) } // 已在最前/最后
+        const a = anchor
+        const patches = new Map(sortedMembers.map((m, i) => [m.id, { z: a + (i + 1) / (sortedMembers.length + 1) }]))
+        return { ok: true, state: patchMany(state, patches, o.id) }
+      }
       const zs = state.objects.map((x) => x.z)
       let z = o.z
       if (op.to === 'front') z = Math.max(...zs) + 1
@@ -441,6 +570,49 @@ function execOp(state: SceneState, op: Op): OpResult {
       const t = resolveTarget(state, op.target)
       if (!t.ok) return t
       return { ok: true, state: { ...state, focusId: t.obj.id } }
+    }
+
+    case 'group': {
+      const objs: SceneObject[] = []
+      for (const sel of op.targets) {
+        const t = resolveTarget(state, sel)
+        if (!t.ok) return t
+        for (const m of membersOf(state, t.obj)) {
+          if (!objs.some((x) => x.id === m.id)) objs.push(m) // 已在组内的成员并入新组
+        }
+      }
+      if (objs.length < 2) return { ok: false, error: err('INVALID_OP', '编组至少需要两个对象') }
+      // 组名：显式 name，否则"组N"；与现有组名/对象名冲突时加序号
+      const taken = new Set<string>(
+        state.objects.flatMap((o) => [o.groupId, o.name]).filter((x): x is string => x !== undefined),
+      )
+      const base = op.name ?? '组'
+      let name = op.name ?? '组1'
+      for (let i = 2; taken.has(name); i++) name = `${base}${i}`
+      const patches = new Map(objs.map((m) => [m.id, { groupId: name }]))
+      return { ok: true, state: patchMany(state, patches, objs[objs.length - 1].id), notice: `已编组：${name}（${objs.length} 个对象）` }
+    }
+
+    case 'ungroup': {
+      const t = resolveTarget(state, op.target)
+      if (!t.ok) return t
+      if (t.obj.groupId === undefined) {
+        return { ok: false, error: err('INVALID_OP', `${t.obj.id} 不在任何组里`) }
+      }
+      const groupId = t.obj.groupId
+      // §5.6：成员保留各自 id 与 name，组名作废
+      return {
+        ok: true,
+        state: {
+          ...state,
+          objects: state.objects.map((o) => {
+            if (o.groupId !== groupId) return o
+            const { groupId: _dropped, ...rest } = o
+            return rest as SceneObject
+          }),
+          focusId: t.obj.id,
+        },
+      }
     }
 
     case 'export':
