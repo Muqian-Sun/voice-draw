@@ -3,6 +3,8 @@ import { parseOps, type Op } from './dsl'
 import { createHistory, executeWithHistory, type HistoryOutcome, type HistoryState } from './engine/history'
 import { CanvasStage } from './components/CanvasStage'
 import { DebugPanel, type LogEntry } from './components/DebugPanel'
+import { STATE_LABELS } from './voice/fsm'
+import { useVoice } from './voice/useVoice'
 
 let logSeq = 0
 
@@ -75,13 +77,23 @@ export default function App() {
     }
   }, [execOps, execText])
 
+  const voice = useVoice({ onLog: pushLog })
+
   const scene = history.scene
   const op = (o: Op) => () => execOps(o)
+  const listening = voice.state !== 'idle'
   return (
     <div className="app">
       <header className="topbar">
         <h1>VoiceDraw 语音绘图</h1>
-        <span className="status-pill">🎤 语音链路待接入</span>
+        <button
+          className={`voice-btn ${listening ? 'voice-on' : ''}`}
+          onClick={listening ? voice.stop : voice.start}
+          disabled={voice.vadStatus === 'loading'}
+        >
+          {voice.vadStatus === 'loading' ? '⏳ 加载 VAD…' : listening ? '🔴 停止聆听' : '🎤 开始聆听'}
+        </button>
+        <span className="status-pill">状态 {STATE_LABELS[voice.state]}</span>
         <span className="status-pill">
           对象 {scene.objects.length} ｜ 焦点 {scene.focusId ?? '无'} ｜ 撤销 {history.undoStack.length} / 重做{' '}
           {history.redoStack.length}
