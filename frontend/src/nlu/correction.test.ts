@@ -93,6 +93,11 @@ describe('§3.3 拼音回退', () => {
     expect(pinyinCorrectToken('屋顶')).toBeNull()
   })
 
+  it('不与字数不同的词条比对（"盒子"hezi 不被纠成"黑"hei）', () => {
+    expect(pinyinCorrectToken('盒子')).toBeNull()
+    expect(correctTranscript('这个叫盒子').corrected).toBe('这个叫盒子')
+  })
+
   it('长度不在 2~3 字 → null', () => {
     expect(pinyinCorrectToken('圆')).toBeNull()
     expect(pinyinCorrectToken('紫不拉几')).toBeNull()

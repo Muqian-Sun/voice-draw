@@ -194,12 +194,15 @@ function editDistance(a: string, b: string): number {
 /**
  * 对未识别的 2~3 字 token 做拼音回退（§3.3）：
  * 拼音编辑距离 ≤1 且唯一命中 → 返回替换词；多个命中或距离 >1 → null（留给 LLM）。
+ * 只比对同字数词条：真同音词音节数必然相同，跨长度比对会把任意双字词
+ * 错纠成拼音前缀相近的单字词（如"盒子"hezi → "黑"hei，命名场景误伤）。
  */
 export function pinyinCorrectToken(token: string): string | null {
   if (token.length < 2 || token.length > 3) return null
   const py = toPinyin(token)
   let hit: string | null = null
   for (const { word, py: dictPy } of FALLBACK_INDEX) {
+    if (word.length !== token.length) continue
     if (word === token) return null // 本来就是词典词，无须纠
     if (editDistance(py, dictPy) <= 1) {
       if (hit !== null && hit !== word) return null // 多个命中 → 不替换
