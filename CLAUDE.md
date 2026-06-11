@@ -52,7 +52,7 @@ README.md
 9b. feat: 火山引擎豆包流式 ASR 真实上游接入（VolcAsrUpstream，二进制帧协议）✅(GH PR#11)
 
 **Day 3（M2 指令理解）**
-10. feat: lexicon 词表模块（颜色/形状/方位/量词，唯一来源，规格 §2）
+10. feat: lexicon 词表模块（颜色/形状/方位/量词，唯一来源，规格 §2）✅(GH PR#12)
 11. feat: 同音词纠错（词表 + 拼音编辑距离回退，规格 §3）
 12. feat: 规则快路径 T1~T11 模板解析（规格 §4）
 13. feat: backend LLM 转发 + parse 模式解析（System Prompt 构建期生成 + JSON 校验重试）
