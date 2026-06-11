@@ -26,12 +26,14 @@ export interface UseVoiceOptions {
   onLog: (level: 'info' | 'warn' | 'error', text: string) => void
   /** ASR final 文本回调（理解层入口，PR #12 起消费） */
   onUtterance?: (text: string, confidence: number, alternatives: string[]) => void
+  /** ASR partial 回调（投机解析，协议 §4.1） */
+  onPartial?: (text: string) => void
 }
 
 const RING_SIZE = 4 // 句首回填帧数（约 128ms，与 VAD preSpeechPadMs 对齐）
 const FINAL_TIMEOUT_MS = 4000
 
-export function useVoice({ onLog, onUtterance }: UseVoiceOptions) {
+export function useVoice({ onLog, onUtterance, onPartial }: UseVoiceOptions) {
   const [state, setState] = useState<VoiceState>('idle')
   const [vadStatus, setVadStatus] = useState<VadStatus>('idle')
   const [providerName, setProviderName] = useState('gateway')
@@ -86,7 +88,10 @@ export function useVoice({ onLog, onUtterance }: UseVoiceOptions) {
   const buildEvents = useCallback((): AsrEvents => {
     return {
       onPartial: (text) => {
-        if (text.trim()) showSubtitle({ text, kind: 'partial' })
+        if (text.trim()) {
+          showSubtitle({ text, kind: 'partial' })
+          onPartial?.(text)
+        }
       },
       onFinal: (r) => {
         if (finalTimerRef.current) clearTimeout(finalTimerRef.current)
@@ -114,7 +119,7 @@ export function useVoice({ onLog, onUtterance }: UseVoiceOptions) {
       onLog,
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [onLog, onUtterance, showSubtitle, finishTurn])
+  }, [onLog, onUtterance, onPartial, showSubtitle, finishTurn])
 
   const ensureProvider = useCallback((): AsrProvider => {
     if (!providerRef.current) {
