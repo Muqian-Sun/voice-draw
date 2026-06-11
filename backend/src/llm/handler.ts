@@ -1,0 +1,150 @@
+/**
+ * LLM 转发（协议 §2）：密钥隔离代理，前端不接触上游与密钥。
+ *
+ * POST /api/llm/parse
+ *   入参：{ utterance, mode, scene, asr_alternatives?, recent?, retry? }
+ *   出参：{ content, latencyMs, firstTokenMs, model } ｜ { error, message }
+ *
+ * System Prompt 来自构建期生成的 prompt.generated.ts（运行期逐字节不变，
+ * 命中上游 prompt cache）；所有变化信息进 user message（协议 §2.1）。
+ * 上游走流式：parse 4s / plan 10s 无首 token 中止（协议 §2.3）。
+ * 校验失败重试由前端发起：retry 携带上一轮原文与校验错误，这里组装成追加对话。
+ */
+import type { Request, Response } from 'express'
+import { z } from 'zod'
+import { SYSTEM_PROMPT } from './prompt.generated.js'
+
+const DEFAULT_BASE_URL = 'https://openai.qiniu.com/v1'
+const DEFAULT_MODEL = 'deepseek-v3'
+
+export const FIRST_TOKEN_TIMEOUT_MS = { parse: 4_000, plan: 10_000 } as const
+/** 首 token 之后的总时长兜底（流卡死保护） */
+const TOTAL_TIMEOUT_MS = 30_000
+
+const requestSchema = z
+  .object({
+    utterance: z.string().min(1),
+    mode: z.enum(['parse', 'plan']),
+    scene: z.unknown(),
+    asr_alternatives: z.array(z.string()).max(2).optional(),
+    recent: z.array(z.object({ utterance: z.string(), summary: z.string() }).strict()).max(3).optional(),
+    retry: z.object({ previous: z.string(), error: z.string() }).strict().optional(),
+  })
+  .strict()
+
+export type LlmParseRequest = z.infer<typeof requestSchema>
+
+interface ChatMessage {
+  role: 'system' | 'user' | 'assistant'
+  content: string
+}
+
+/** 组装上游消息：system 固定；user = 变化信息 JSON；重试时追加上一轮输出与纠错指示 */
+export function buildMessages(body: LlmParseRequest): ChatMessage[] {
+  const { retry, ...payload } = body
+  const messages: ChatMessage[] = [
+    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'user', content: JSON.stringify(payload) },
+  ]
+  if (retry) {
+    messages.push(
+      { role: 'assistant', content: retry.previous },
+      { role: 'user', content: `你的输出未通过校验：${retry.error}。请重新只输出修正后的 JSON 对象，不要输出其他文字。` },
+    )
+  }
+  return messages
+}
+
+/** 解析 SSE 流的一行，返回 delta 文本（非数据行/结束标记返回 null） */
+export function extractSseDelta(line: string): string | null {
+  if (!line.startsWith('data:')) return null
+  const data = line.slice(5).trim()
+  if (data === '' || data === '[DONE]') return null
+  try {
+    const json = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string } }> }
+    return json.choices?.[0]?.delta?.content ?? null
+  } catch {
+    return null
+  }
+}
+
+export function isLlmConfigured(): boolean {
+  return Boolean(process.env.QINIU_API_KEY)
+}
+
+export async function handleLlmParse(req: Request, res: Response): Promise<void> {
+  const parsed = requestSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json({ error: 'BAD_REQUEST', message: parsed.error.issues.map((i) => i.message).join('；') })
+    return
+  }
+  if (!isLlmConfigured()) {
+    res.status(503).json({ error: 'LLM_NOT_CONFIGURED', message: '未配置 QINIU_API_KEY，仅规则层可用' })
+    return
+  }
+  const body = parsed.data
+  const baseUrl = (process.env.QINIU_LLM_BASE_URL || DEFAULT_BASE_URL).replace(/\/$/, '')
+  const model = process.env.QINIU_LLM_MODEL || DEFAULT_MODEL
+  const firstTokenTimeout = FIRST_TOKEN_TIMEOUT_MS[body.mode]
+
+  const t0 = Date.now()
+  const abort = new AbortController()
+  let timer = setTimeout(() => abort.abort(), firstTokenTimeout)
+
+  try {
+    const upstream = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${process.env.QINIU_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model,
+        stream: true,
+        temperature: 0,
+        response_format: { type: 'json_object' },
+        messages: buildMessages(body),
+      }),
+      signal: abort.signal,
+    })
+    if (!upstream.ok || upstream.body === null) {
+      const text = await upstream.text().catch(() => '')
+      res.status(502).json({ error: 'UPSTREAM_ERROR', message: `上游 ${upstream.status}：${text.slice(0, 200)}` })
+      return
+    }
+
+    let content = ''
+    let firstTokenMs: number | undefined
+    let buffer = ''
+    const reader = upstream.body.getReader()
+    const decoder = new TextDecoder()
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+      for (const line of lines) {
+        const delta = extractSseDelta(line)
+        if (delta === null) continue
+        if (firstTokenMs === undefined) {
+          firstTokenMs = Date.now() - t0
+          clearTimeout(timer) // 首 token 已到，切换总时长兜底
+          timer = setTimeout(() => abort.abort(), TOTAL_TIMEOUT_MS)
+        }
+        content += delta
+      }
+    }
+    res.json({ content, latencyMs: Date.now() - t0, firstTokenMs, model })
+  } catch (e) {
+    const aborted = (e as Error).name === 'AbortError'
+    res.status(aborted ? 504 : 502).json({
+      error: aborted ? 'UPSTREAM_TIMEOUT' : 'UPSTREAM_ERROR',
+      message: aborted
+        ? `上游 ${FIRST_TOKEN_TIMEOUT_MS[body.mode] / 1000}s 无首 token（或流超时），已中止`
+        : (e as Error).message,
+    })
+  } finally {
+    clearTimeout(timer)
+  }
+}

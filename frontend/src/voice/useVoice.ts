@@ -2,7 +2,7 @@
  * 麦克风采集 + Silero VAD 断句 + 流式 ASR（协议 §4.1 LISTENING/PARSING 段）
  *
  * 音频通路：VAD 持有麦克风 → 说话期间逐帧推给 AsrProvider（句首回填 4 帧 ring buffer）
- * → 断句时 endSession → partial 驱动实时字幕，final 进日志（理解层随 PR #12/#13 接入）。
+ * → 断句时 endSession → partial 驱动实时字幕，final 经 onUtterance 进理解通道（纠错 → 规则 → LLM）。
  * Provider 策略：默认走 backend 网关（七牛/mock 由后端定）；网关 3 连败或不可恢复错误
  * 自动切 WebSpeech 兜底（协议 §3.1/§3.2）。
  */
@@ -81,7 +81,7 @@ export function useVoice({ onLog, onUtterance }: UseVoiceOptions) {
         if (finalTimerRef.current) clearTimeout(finalTimerRef.current)
         if (r.text.trim()) {
           showSubtitle({ text: r.text, kind: 'final' })
-          onLog('info', `📝 转写：「${r.text}」（置信度 ${r.confidence.toFixed(2)}）—— 理解层随 PR #12/#13 接入`)
+          onLog('info', `📝 转写：「${r.text}」（置信度 ${r.confidence.toFixed(2)}）`)
           onUtterance?.(r.text, r.confidence, r.alternatives)
         }
         finishTurn()

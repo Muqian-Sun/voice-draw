@@ -5,6 +5,7 @@ import { createHistory, executeWithHistory, type HistoryOutcome, type HistorySta
 import { CanvasStage } from './components/CanvasStage'
 import { DebugPanel, type LogEntry } from './components/DebugPanel'
 import { correctTranscript } from './nlu/correction'
+import { parseWithLlm } from './nlu/llm'
 import { decideMode, parseRule } from './nlu/rules'
 import { CONFIRM_YES_WORDS } from './shared/lexicon'
 import { STATE_LABELS } from './voice/fsm'
@@ -65,8 +66,17 @@ export default function App() {
 
   // 破坏性操作确认窗口（协议 §4.3）：语音 FSM 子态接入前由文本入口承担同语义
   const pendingConfirmRef = useRef<Op[] | null>(null)
+  // 最近 3 轮成功指令（协议 §2.2 recent，供 LLM 多轮指代）
+  const recentRef = useRef<Array<{ utterance: string; summary: string }>>([])
+  const lastTxRef = useRef<{ utterance: string; opCount: number } | undefined>(undefined)
 
-  /** 文本入口：DSL JSON 直接执行；自然语言走 纠错 → 规则快路径（升级 LLM 计划 PR#13） */
+  const recordSuccess = useCallback((utterance: string, ops: Op[]) => {
+    const summary = ops.map((o) => (o.op === 'create' ? `create ${o.shape}${o.name ? ` ${o.name}` : ''}` : o.op)).join('; ')
+    recentRef.current = [...recentRef.current.slice(-2), { utterance, summary }]
+    lastTxRef.current = { utterance, opCount: ops.length }
+  }, [])
+
+  /** 文本入口：DSL JSON 直接执行；自然语言走 纠错 → 规则快路径 → 升级 LLM */
   const execText = useCallback(
     (text: string) => {
       const trimmed = text.trim()
@@ -102,7 +112,34 @@ export default function App() {
         hasFocus: scene.focusId !== undefined,
       })
       if (r === null) {
-        pushLog('warn', `规则未命中 → 升级 LLM（mode=${decideMode(corr.corrected)}，计划 PR#13 接入）`)
+        const mode = decideMode(corr.corrected)
+        pushLog('info', `规则未命中 → 升级 LLM（mode=${mode}）…`)
+        void (async () => {
+          const llm = await parseWithLlm(corr.corrected, mode, {
+            scene: historyRef.current.scene,
+            asrAlternatives: corr.applied.length > 0 ? [corr.original] : [],
+            recent: recentRef.current,
+            lastTransaction: lastTxRef.current,
+          })
+          if (!llm.ok) {
+            pushLog('error', `LLM 解析失败：${llm.error}`)
+            pushLog('warn', '🔊 没听懂，请换个说法')
+            return
+          }
+          const res = llm.result
+          pushLog('info', `LLM 命中 ${res.source}（${res.latencyMs.toFixed(0)}ms，confidence ${res.confidence.toFixed(2)}）`)
+          if (res.intent === 'clarify') {
+            pushLog('warn', `🔊 ${res.clarify?.question ?? res.say ?? '能再说明确一点吗？'}`)
+            return
+          }
+          if (res.intent === 'reject') {
+            pushLog('warn', `🔊 ${res.say ?? '这个我帮不了，试试绘图指令'}`)
+            return
+          }
+          if (res.say !== undefined) pushLog('info', `🔊 ${res.say}`)
+          const outcome = execOps(res.ops)
+          if (!('error' in outcome && outcome.error)) recordSuccess(corr.corrected, res.ops)
+        })()
         return
       }
       pushLog('info', `规则命中 ${r.template}（${r.latencyMs.toFixed(1)}ms）`)
@@ -116,9 +153,10 @@ export default function App() {
         return
       }
       if (r.say !== undefined) pushLog('info', `🔊 ${r.say}`)
-      execOps(r.ops)
+      const outcome = execOps(r.ops)
+      if (!('error' in outcome && outcome.error)) recordSuccess(corr.corrected, r.ops)
     },
-    [execOps, pushLog],
+    [execOps, pushLog, recordSuccess],
   )
 
   // 控制台入口与面板共用同一执行通道
@@ -133,7 +171,8 @@ export default function App() {
     }
   }, [execOps, execText])
 
-  const voice = useVoice({ onLog: pushLog })
+  // 语音 final → 同一理解通道（纠错 → 规则 → LLM），与调试面板共用
+  const voice = useVoice({ onLog: pushLog, onUtterance: (text) => execText(text) })
 
   const scene = history.scene
   const op = (o: Op) => () => execOps(o)
