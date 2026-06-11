@@ -1,54 +1,64 @@
 /**
- * TTS 转发纯函数单测（v1 协议结构/成功码/配置读取）。网络路径由前端编排器测试覆盖语义。
+ * TTS 转发纯函数单测（v3 unidirectional 协议结构/流解析/配置读取）。
+ * 网络路径由前端编排器测试覆盖语义。
  */
 import { afterEach, describe, expect, it } from 'vitest'
-import { buildTtsRequest, parseTtsResponse, readTtsConfig } from './handler.js'
+import { buildTtsRequest, parseTtsStream, readTtsConfig } from './handler.js'
 
-const ENV_KEYS = ['VOLC_TTS_APPID', 'VOLC_TTS_TOKEN', 'VOLC_TTS_VOICE_TYPE', 'VOLC_TTS_CLUSTER', 'VOLC_TTS_SPEED']
+const ENV_KEYS = ['VOLC_TTS_APPID', 'VOLC_TTS_TOKEN', 'VOLC_TTS_SPEAKER']
 
 afterEach(() => {
   for (const k of ENV_KEYS) delete process.env[k]
 })
 
 describe('readTtsConfig', () => {
-  it('appid 与 token 都有才算配置；缺省音色/簇/语速', () => {
+  it('appid 与 token 都有才算配置；缺省音色灿灿', () => {
     expect(readTtsConfig()).toBeNull()
     process.env.VOLC_TTS_APPID = 'app1'
     expect(readTtsConfig()).toBeNull()
     process.env.VOLC_TTS_TOKEN = 'tk1'
-    expect(readTtsConfig()).toEqual({
-      appid: 'app1',
-      token: 'tk1',
-      voiceType: 'BV001_streaming',
-      cluster: 'volcano_tts',
-      speedRatio: 1.0,
-    })
+    expect(readTtsConfig()).toEqual({ appid: 'app1', token: 'tk1', speaker: 'zh_female_cancan_mars_bigtts' })
   })
 })
 
-describe('buildTtsRequest（v1 协议结构）', () => {
-  it('app/user/audio/request 四段齐全，operation=query，encoding=mp3', () => {
-    const r = buildTtsRequest('画好了', { appid: 'a', token: 't', voiceType: 'BV001_streaming', cluster: 'volcano_tts', speedRatio: 1.1 }, 'rid-1')
+describe('buildTtsRequest（v3 协议结构）', () => {
+  it('user/req_params 结构，mp3 24k', () => {
+    const r = buildTtsRequest('画好了', { appid: 'a', token: 't', speaker: 'zh_female_cancan_mars_bigtts' })
     expect(r).toEqual({
-      app: { appid: 'a', token: 't', cluster: 'volcano_tts' },
       user: { uid: 'voice-draw' },
-      audio: { voice_type: 'BV001_streaming', encoding: 'mp3', speed_ratio: 1.1 },
-      request: { reqid: 'rid-1', text: '画好了', operation: 'query' },
+      req_params: {
+        text: '画好了',
+        speaker: 'zh_female_cancan_mars_bigtts',
+        audio_params: { format: 'mp3', sample_rate: 24000 },
+      },
     })
   })
 })
 
-describe('parseTtsResponse（成功码 3000）', () => {
-  it('3000 + base64 → 音频 Buffer', () => {
-    const r = parseTtsResponse({ code: 3000, data: Buffer.from('mp3bytes').toString('base64') })
+describe('parseTtsStream（JSON-lines 流）', () => {
+  const b64 = (s: string) => Buffer.from(s).toString('base64')
+
+  it('拼接音频块，跳过句元数据行，结束码停止', () => {
+    const body = [
+      JSON.stringify({ code: 0, message: '', data: b64('aa') }),
+      JSON.stringify({ code: 0, message: '', data: b64('bb') }),
+      JSON.stringify({ code: 0, message: '', data: null, sentence: { text: 'x' } }),
+      JSON.stringify({ code: 20000000, message: 'OK', data: null }),
+    ].join('\n')
+    const r = parseTtsStream(body)
     expect(r.ok).toBe(true)
-    if (r.ok) expect(r.audio.toString()).toBe('mp3bytes')
+    if (r.ok) expect(r.audio.toString()).toBe('aabb')
   })
 
-  it('非 3000 / 缺 data → 错误带上游信息', () => {
-    const r = parseTtsResponse({ code: 3001, message: 'invalid voice' })
+  it('错误码（如配额/未授权）→ 错误带上游信息', () => {
+    const body = JSON.stringify({ code: 45000292, message: 'quota exceeded' })
+    const r = parseTtsStream(body)
     expect(r.ok).toBe(false)
-    if (!r.ok) expect(r.error).toContain('3001')
-    expect(parseTtsResponse({}).ok).toBe(false)
+    if (!r.ok) expect(r.error).toContain('45000292')
+  })
+
+  it('无音频数据 / 非法行 → 错误', () => {
+    expect(parseTtsStream(JSON.stringify({ code: 20000000, message: 'OK' })).ok).toBe(false)
+    expect(parseTtsStream('not-json').ok).toBe(false)
   })
 })
