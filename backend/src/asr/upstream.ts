@@ -1,8 +1,10 @@
 /**
  * ASR 上游抽象：代理对上游云厂商的最小接口。
- * 实现：MockAsrUpstream（本 PR，无密钥跑通协议链路）；QiniuAsrUpstream（计划 PR #9）。
+ * 实现：VolcAsrUpstream（火山引擎豆包流式 ASR，配置密钥后启用）；
+ *       MockAsrUpstream（无密钥兜底，保证协议链路可跑通可演示）。
  */
 import { MockAsrUpstream } from './mock.js'
+import { isVolcConfigured, VolcAsrUpstream } from './volc.js'
 
 export interface AsrUpstreamEvents {
   onPartial: (text: string) => void
@@ -22,9 +24,10 @@ export interface AsrUpstream {
 export type UpstreamFactory = (events: AsrUpstreamEvents) => AsrUpstream
 
 export function createUpstreamFactory(): UpstreamFactory {
-  if (process.env.QINIU_API_KEY) {
-    // 七牛云流式 ASR 上游随计划 PR #9 接入；当前即使有密钥也先走 mock
-    console.warn('[asr] QINIU_API_KEY 已配置，但七牛上游将在后续 PR 接入，当前使用 mock 上游')
+  if (isVolcConfigured()) {
+    console.log('[asr] 上游：火山引擎豆包流式 ASR')
+    return (events) => new VolcAsrUpstream(events)
   }
+  console.log('[asr] 上游：mock（未配置 VOLC_API_KEY，final 文本取 MOCK_ASR_FINAL）')
   return (events) => new MockAsrUpstream(events)
 }
