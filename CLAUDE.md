@@ -57,7 +57,7 @@ README.md
 12. feat: 规则快路径 T1~T11 模板解析（规格 §4）✅(GH PR#14)
 12b. feat: 解释器补全修改类操作 resize/rotate/rename/setText/zorder/focus/export（弹性追加）✅(GH PR#15)
 13. feat: backend LLM 转发 + parse 模式解析（System Prompt 构建期生成 + JSON 校验重试）✅(GH PR#17)
-14. feat: 焦点对象与指代消解（规格 §5.1）
+14. feat: 焦点对象与指代消解（规格 §5.1）✅(GH PR#18)
 
 **Day 4（M3 拆解+反馈闭环）**
 15. feat: TTS 反馈编排（七牛 TTS + speechSynthesis 兜底、半双工互斥）
