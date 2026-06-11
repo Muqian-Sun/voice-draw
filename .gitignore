@@ -1,0 +1,16 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+build/
+
+# env / secrets
+.env
+.env.*
+!.env.example
+
+# local tooling
+.claude/
+.DS_Store
+*.log
