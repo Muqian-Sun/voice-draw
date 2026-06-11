@@ -206,5 +206,8 @@ export function useVoice({ onLog, onUtterance }: UseVoiceOptions) {
     onLog('info', '已停止聆听')
   }, [dispatch, onLog])
 
-  return { state, vadStatus, providerName, subtitle, start, stop, dispatch, setTtsActive }
+  /** 回调中取当前状态（React state 闭包滞后，FSM 决策须用 ref） */
+  const getState = useCallback(() => stateRef.current, [])
+
+  return { state, vadStatus, providerName, subtitle, start, stop, dispatch, setTtsActive, getState }
 }

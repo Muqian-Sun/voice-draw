@@ -1,15 +1,19 @@
 /**
- * 主状态机（协议 §4.1）
+ * 主状态机（协议 §4.1 / §4.3）
  *
  *   idle ──START_LISTEN──▶ listening ──SEGMENT_END──▶ parsing ──PARSE_DONE──▶ executing
- *     ▲                        ▲  ▲                      │                        │
- *     └──────STOP_LISTEN───────┘  │                      │ PARSE_FAIL             │ EXEC_DONE
- *        （任意状态可停止）        └────TTS_END──── speaking ◀────────────────────┘
+ *     ▲                        ▲  ▲                    ▲  │                       │
+ *     └──────STOP_LISTEN───────┘  │                    │  │ PARSE_FAIL            │ EXEC_DONE
+ *        （任意状态可停止）        └────TTS_END──── speaking ◀───────────────────┘
+ *                                                      │  ▲
+ *                                  AWAIT_CONFIRM       ▼  │ CONFIRM_TIMEOUT（5s 视为取消）
+ *                              （确认问题播完）  awaitConfirm ──SEGMENT_END──▶ parsing
  *
  * 失败路径：解析失败 → speaking（播报"没听懂"）→ TTS_END → listening。
- * AWAIT_CONFIRM（破坏性操作确认）是 speaking 的子态，随计划 PR #16 引入。
+ * awaitConfirm（协议 §4.3 破坏性操作确认窗口）：确认问题播完后进入，
+ * 用户的回答经 SEGMENT_END 正常进解析（§2.6 词表匹配在理解层），5s 无回答视为取消。
  */
-export type VoiceState = 'idle' | 'listening' | 'parsing' | 'executing' | 'speaking'
+export type VoiceState = 'idle' | 'listening' | 'parsing' | 'executing' | 'speaking' | 'awaitConfirm'
 
 export type VoiceEvent =
   | 'START_LISTEN' // 用户开启语音（麦克风授权完成）
@@ -19,13 +23,16 @@ export type VoiceEvent =
   | 'PARSE_FAIL' // 解析失败/拒识，直接进入播报
   | 'EXEC_DONE' // 执行完成（成功或部分失败），进入播报
   | 'TTS_END' // 播报结束，回到聆听
+  | 'AWAIT_CONFIRM' // 确认问题播完，进入确认窗口（协议 §4.3）
+  | 'CONFIRM_TIMEOUT' // 确认窗口超时 → 播报"已取消"
 
 const TRANSITIONS: Record<VoiceState, Partial<Record<VoiceEvent, VoiceState>>> = {
   idle: { START_LISTEN: 'listening' },
   listening: { SEGMENT_END: 'parsing', STOP_LISTEN: 'idle' },
   parsing: { PARSE_DONE: 'executing', PARSE_FAIL: 'speaking', STOP_LISTEN: 'idle' },
   executing: { EXEC_DONE: 'speaking', STOP_LISTEN: 'idle' },
-  speaking: { TTS_END: 'listening', STOP_LISTEN: 'idle' },
+  speaking: { TTS_END: 'listening', AWAIT_CONFIRM: 'awaitConfirm', STOP_LISTEN: 'idle' },
+  awaitConfirm: { SEGMENT_END: 'parsing', CONFIRM_TIMEOUT: 'speaking', STOP_LISTEN: 'idle' },
 }
 
 /** 返回新状态；非法转移返回 null（调用方决定忽略或告警） */
@@ -39,4 +46,8 @@ export const STATE_LABELS: Record<VoiceState, string> = {
   parsing: '解析中',
   executing: '执行中',
   speaking: '播报中',
+  awaitConfirm: '等待确认',
 }
+
+/** 确认窗口时长（协议 §4.3：超时视为取消） */
+export const CONFIRM_WINDOW_MS = 5000

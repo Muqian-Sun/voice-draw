@@ -42,3 +42,25 @@ describe('主状态机（协议 §4.1）', () => {
     expect(s).toBe('listening')
   })
 })
+
+describe('awaitConfirm 确认窗口（协议 §4.3）', () => {
+  it('speaking 播完确认问题 → awaitConfirm；普通播完仍回 listening', () => {
+    expect(transition('speaking', 'AWAIT_CONFIRM')).toBe('awaitConfirm')
+    expect(transition('speaking', 'TTS_END')).toBe('listening')
+  })
+
+  it('确认窗口内回答 → parsing（回答经正常理解通道匹配 §2.6 词表）', () => {
+    expect(transition('awaitConfirm', 'SEGMENT_END')).toBe('parsing')
+  })
+
+  it('5s 超时 → speaking（播报"已取消"）；可随时停止', () => {
+    expect(transition('awaitConfirm', 'CONFIRM_TIMEOUT')).toBe('speaking')
+    expect(transition('awaitConfirm', 'STOP_LISTEN')).toBe('idle')
+  })
+
+  it('AWAIT_CONFIRM 只能从 speaking 进入', () => {
+    expect(transition('listening', 'AWAIT_CONFIRM')).toBeNull()
+    expect(transition('parsing', 'AWAIT_CONFIRM')).toBeNull()
+    expect(transition('idle', 'AWAIT_CONFIRM')).toBeNull()
+  })
+})
