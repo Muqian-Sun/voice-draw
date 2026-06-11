@@ -38,9 +38,9 @@ README.md
 ## PR 拆分计划（20 个，对齐 M0~M4，每日 3~5 个）
 
 **Day 1（M0 骨架+绘图引擎）**
-1. chore: 初始化 monorepo 骨架（frontend/backend）+ README 初版
-2. feat: 绘图 DSL 类型与 zod Schema（协议 §1.3-1.4）
-3. feat: 场景图 + DSL 解释器（create/style/move/delete）
+1. chore: 初始化 monorepo 骨架（frontend/backend）+ README 初版 ✅(GH PR#2)
+2. feat: 绘图 DSL 类型与 zod Schema（协议 §1.3-1.4）✅(GH PR#3)
+3. feat: 场景图 + DSL 解释器（create/style/move/delete）✅(GH PR#4)
 4. feat: 事务式 undo/redo（场景快照栈，规格 §5.4）
 5. feat: 文本调试面板（输入 DSL/自然语言 + 事件日志）
 
@@ -90,6 +90,7 @@ README.md
 ## 开发工作流提醒（给 Claude 的指令）
 
 - 每完成一个 PR 范围的功能：跑通该 PR 的"测试方式"再提交；commit message 与 PR 范围一致
+- **每个 PR 合并后在本文件「PR 拆分计划」对应条目标记 ✅(GH PR#n)**——本条目自身的勾在该 PR 内创建 PR 后追加提交（此时才知道 GH 编号）
 - 合并后做冒烟验证：起前后端，用调试面板灌一句 Golden 话术
 - 改 lexicon 数值 → 同步规格文档 §2 与 System Prompt → 跑 Golden 回归
 - 新依赖 → 同一 PR 内更新 README 依赖表
