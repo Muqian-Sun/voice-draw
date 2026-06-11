@@ -30,7 +30,7 @@
 pnpm install
 
 # 2. （可选）配置密钥——不配置也能启动，自动降级
-cp backend/.env.example backend/.env   # ASR 填火山引擎 VOLC_API_KEY；LLM/TTS 填七牛 QINIU_API_KEY
+cp backend/.env.example backend/.env   # ASR 填火山引擎 VOLC_API_KEY；LLM 填火山方舟 ARK_API_KEY
 
 # 3. 一条命令启动前后端
 pnpm dev
@@ -41,7 +41,7 @@ pnpm dev
 # curl http://localhost:8787/healthz 应返回 {"ok":true,...}
 ```
 
-**无密钥降级**：未配置 `VOLC_API_KEY` 时 ASR 走 mock 上游（固定话术演示），网关不可用再降浏览器 WebSpeech；未配置 `QINIU_API_KEY` 时，LLM 解析不可用时规则层指令（创建/移动/缩放/撤销等）仍可用，亦可用调试面板文本输入验证全链路。
+**无密钥降级**：未配置 `VOLC_API_KEY` 时 ASR 走 mock 上游（固定话术演示），网关不可用再降浏览器 WebSpeech；未配置 `ARK_API_KEY` 时 LLM 解析不可用，规则层指令（创建/移动/缩放/撤销等）仍可用，亦可用调试面板文本输入验证全链路。
 
 ## 第三方依赖列表
 

@@ -156,10 +156,10 @@ describe('parseWithLlm（mock fetch：成功 / 校验失败重试）', () => {
   it('backend 503（未配密钥）→ 返回错误信息', async () => {
     const fetchFn = vi.fn(
       async () =>
-        new Response(JSON.stringify({ error: 'LLM_NOT_CONFIGURED', message: '未配置 QINIU_API_KEY' }), { status: 503 }),
+        new Response(JSON.stringify({ error: 'LLM_NOT_CONFIGURED', message: '未配置 ARK_API_KEY（火山方舟）' }), { status: 503 }),
     ) as unknown as typeof fetch
     const r = await parseWithLlm('画个圆', 'parse', ctx(fetchFn))
     expect(r.ok).toBe(false)
-    if (!r.ok) expect(r.error).toContain('QINIU_API_KEY')
+    if (!r.ok) expect(r.error).toContain('ARK_API_KEY')
   })
 })

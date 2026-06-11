@@ -14,12 +14,14 @@ import type { Request, Response } from 'express'
 import { z } from 'zod'
 import { SYSTEM_PROMPT } from './prompt.generated.js'
 
-const DEFAULT_BASE_URL = 'https://openai.qiniu.com/v1'
-const DEFAULT_MODEL = 'deepseek-v3'
+// 火山方舟 Coding Plan（用户决策，弃七牛）：/api/coding 为 Anthropic 协议，
+// /api/coding/v3 为 OpenAI 兼容协议——本服务用后者，复用 chat/completions + SSE delta
+const DEFAULT_BASE_URL = 'https://ark.cn-beijing.volces.com/api/coding/v3'
+const DEFAULT_MODEL = 'deepseek-v4-flash'
 
 export const FIRST_TOKEN_TIMEOUT_MS = { parse: 4_000, plan: 10_000 } as const
-/** 首 token 之后的总时长兜底（流卡死保护） */
-const TOTAL_TIMEOUT_MS = 30_000
+/** 首 token 之后的总时长兜底（流卡死保护）；plan 长输出在 ~20 tok/s 上游需更宽 */
+export const TOTAL_TIMEOUT_MS = { parse: 30_000, plan: 90_000 } as const
 
 const requestSchema = z
   .object({
@@ -69,7 +71,7 @@ export function extractSseDelta(line: string): string | null {
 }
 
 export function isLlmConfigured(): boolean {
-  return Boolean(process.env.QINIU_API_KEY)
+  return Boolean(process.env.ARK_API_KEY)
 }
 
 export async function handleLlmParse(req: Request, res: Response): Promise<void> {
@@ -79,12 +81,12 @@ export async function handleLlmParse(req: Request, res: Response): Promise<void>
     return
   }
   if (!isLlmConfigured()) {
-    res.status(503).json({ error: 'LLM_NOT_CONFIGURED', message: '未配置 QINIU_API_KEY，仅规则层可用' })
+    res.status(503).json({ error: 'LLM_NOT_CONFIGURED', message: '未配置 ARK_API_KEY（火山方舟），仅规则层可用' })
     return
   }
   const body = parsed.data
-  const baseUrl = (process.env.QINIU_LLM_BASE_URL || DEFAULT_BASE_URL).replace(/\/$/, '')
-  const model = process.env.QINIU_LLM_MODEL || DEFAULT_MODEL
+  const baseUrl = (process.env.ARK_LLM_BASE_URL || DEFAULT_BASE_URL).replace(/\/$/, '')
+  const model = process.env.ARK_LLM_MODEL || DEFAULT_MODEL
   const firstTokenTimeout = FIRST_TOKEN_TIMEOUT_MS[body.mode]
 
   const t0 = Date.now()
@@ -96,13 +98,14 @@ export async function handleLlmParse(req: Request, res: Response): Promise<void>
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${process.env.QINIU_API_KEY}`,
+        Authorization: `Bearer ${process.env.ARK_API_KEY}`,
       },
       body: JSON.stringify({
         model,
         stream: true,
         temperature: 0,
-        response_format: { type: 'json_object' },
+        // 不传 response_format：Coding 端点的 deepseek-v4-flash 不支持 json_object（实测 400）；
+        // JSON-only 由 System Prompt 约束 + 前端校验重试兜底
         messages: buildMessages(body),
       }),
       signal: abort.signal,
@@ -130,7 +133,7 @@ export async function handleLlmParse(req: Request, res: Response): Promise<void>
         if (firstTokenMs === undefined) {
           firstTokenMs = Date.now() - t0
           clearTimeout(timer) // 首 token 已到，切换总时长兜底
-          timer = setTimeout(() => abort.abort(), TOTAL_TIMEOUT_MS)
+          timer = setTimeout(() => abort.abort(), TOTAL_TIMEOUT_MS[body.mode])
         }
         content += delta
       }
