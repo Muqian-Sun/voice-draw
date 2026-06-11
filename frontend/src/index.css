@@ -38,6 +38,34 @@ body {
   color: #6b7280;
 }
 
+.voice-btn {
+  font-size: 13px;
+  padding: 5px 14px;
+  border-radius: 999px;
+  border: 1px solid #6366f1;
+  background: #6366f1;
+  color: #ffffff;
+  cursor: pointer;
+}
+
+.voice-btn:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.voice-btn.voice-on {
+  background: #fef2f2;
+  border-color: #ef4444;
+  color: #b91c1c;
+  animation: voice-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes voice-pulse {
+  50% {
+    box-shadow: 0 0 0 5px rgba(239, 68, 68, 0.15);
+  }
+}
+
 .workspace {
   flex: 1;
   display: flex;
