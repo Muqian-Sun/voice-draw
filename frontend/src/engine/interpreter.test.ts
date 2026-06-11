@@ -59,11 +59,9 @@ describe('create（规格 §2.4 几何换算 / §5.1 焦点）', () => {
     expect(s.focusId).toBe('circle#2')
   })
 
-  it('相对定位 at.ref 暂返回 UNSUPPORTED_OP（计划 PR #6）', () => {
-    const r = executeTransaction(createEmptyScene(), [
-      { op: 'create', shape: 'circle', at: { ref: 'canvas', anchor: 'top-left' } },
-    ])
-    expect(r.error?.code).toBe('UNSUPPORTED_OP')
+  it('相对定位 ref=canvas 内贴（左上角，内边距 40）', () => {
+    const s = run([{ op: 'create', shape: 'rect', width: 100, height: 60, at: { ref: 'canvas', anchor: 'top-left' } }])
+    expect(getBBox(s.objects[0])).toEqual([40, 40, 100, 60])
   })
 })
 
@@ -120,7 +118,7 @@ describe('目标解析（协议 §1.3）', () => {
 describe('move / style / delete 与焦点规则（规格 §5.1）', () => {
   it('move delta 平移并设焦点（"把它往右移一点"链路）', () => {
     const s0 = run([
-      { op: 'create', shape: 'circle', at: { x: 100, y: 100 } },
+      { op: 'create', shape: 'circle', size: 40, at: { x: 100, y: 100 } },
       { op: 'create', shape: 'rect', at: { x: 600, y: 400 } },
     ])
     const s = run([{ op: 'move', target: { byQuery: { shape: 'circle' } }, delta: [60, 0] }], s0)
@@ -177,7 +175,7 @@ describe('事务语义（协议 §1.5）', () => {
     expect(s.objects[1].stroke).toBe('#AAAAAA')
   })
 
-  it('undo 暂未支持 → UNSUPPORTED_OP（计划 PR #4）', () => {
+  it('undo 不属于解释器职责（由 history 层处理），直达解释器返回 UNSUPPORTED_OP', () => {
     const r = executeTransaction(createEmptyScene(), [{ op: 'undo' }])
     expect(r.error?.code).toBe('UNSUPPORTED_OP')
   })

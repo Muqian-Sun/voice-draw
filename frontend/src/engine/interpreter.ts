@@ -1,20 +1,20 @@
 /**
  * DSL 解释器（规格 §5 执行语义）
  *
- * 已支持：create / style / move / delete / clear + 目标解析（§1.3）+ 焦点规则（§5.1）。
+ * 已支持：create / style / move / delete / clear + 目标解析（§1.3）+ 焦点规则（§5.1）
+ *         + 自动布局/相对定位/越界 clamp（§5.2-5.5）+ 相对尺寸（§2.4）。
  * undo/redo 由上层 history.ts 快照栈处理（§5.4），不进入本解释器。
  * 暂不支持（按 PR 计划逐步消除，返回 UNSUPPORTED_OP）：
- * - 相对定位与自动布局（计划 PR #6）、
- *   resize/rotate/rename/setText/zorder/group/focus/export（随对应功能 PR 接入）
+ * - resize/rotate/rename/setText/zorder/group/focus/export（随对应功能 PR 接入）
  *
  * executeTransaction 是纯函数：不修改入参，返回新 SceneState——
- * 这是 PR #4 快照式 undo 的前提。事务内逐 Op 执行，失败时保留已成功的 Op（协议 §1.5）。
+ * 这是快照式 undo 的前提。事务内逐 Op 执行，失败时保留已成功的 Op（协议 §1.5）。
  */
 import type { CreateOp, Op, Position, SizeSpec, TargetSelector } from '../dsl'
-import { CANVAS_WIDTH, CANVAS_HEIGHT } from '../dsl'
-import { DEFAULT_STYLE, SEMANTIC_SIZE } from '../shared/lexicon'
+import { CANVAS_PADDING, DEFAULT_GAP, DEFAULT_STYLE, SEMANTIC_SIZE } from '../shared/lexicon'
+import { autoPlace, clampCenter, placeInside, placeOutside, type BBox, type Point } from './layout'
 import type { SceneObject, SceneState } from './scene'
-import { getCenter } from './scene'
+import { getBBox, getCenter } from './scene'
 
 // ---------- 错误模型（协议 §1.5 错误码表） ----------
 
@@ -38,6 +38,8 @@ export interface ExecOutcome {
   /** 成功执行的 Op 数（失败时已成功的部分保留） */
   executed: number
   error?: EngineError
+  /** 非错误提示（如越界 clamp，§5.5：不播报，调试面板可见） */
+  notices?: string[]
 }
 
 const err = (code: EngineErrorCode, message: string, candidateIds?: string[]): EngineError => ({
@@ -91,28 +93,38 @@ export function resolveTarget(state: SceneState, sel: TargetSelector): ResolveRe
   return { ok: true, obj: hits[0] }
 }
 
-// ---------- 尺寸与几何（规格 §2.4 特征尺寸换算） ----------
+const bboxOf = (o: SceneObject): BBox => {
+  const [x, y, w, h] = getBBox(o)
+  return { x, y, w, h }
+}
 
+// ---------- 尺寸与几何（规格 §2.4 特征尺寸换算 + 相对尺寸维度规则） ----------
+
+type SizeDim = 'feature' | 'width' | 'height'
 type SizeResolution = { ok: true; v: number } | { ok: false; error: EngineError }
 
-function resolveSize(spec: SizeSpec | undefined, fallback: number): SizeResolution {
+function resolveSize(state: SceneState, spec: SizeSpec | undefined, fallback: number, dim: SizeDim): SizeResolution {
   if (spec === undefined) return { ok: true, v: fallback }
   if (typeof spec === 'number') return { ok: true, v: spec }
   if (typeof spec === 'string') return { ok: true, v: SEMANTIC_SIZE[spec] }
-  // {relativeTo, factor} 依赖 bbox 参照解析，随计划 PR #6（相对定位）支持
-  return { ok: false, error: err('UNSUPPORTED_OP', '相对尺寸（relativeTo）将在后续 PR 支持') }
+  // 相对尺寸维度规则（§2.4）：width → 参照宽；height → 参照高；size → max(参照宽,高)/2
+  const t = resolveTarget(state, spec.relativeTo)
+  if (!t.ok) return t
+  const b = bboxOf(t.obj)
+  const base = dim === 'width' ? b.w : dim === 'height' ? b.h : Math.max(b.w, b.h) / 2
+  return { ok: true, v: spec.factor * base }
 }
 
 type GeometryResult = { ok: true; geo: Partial<SceneObject> } | { ok: false; error: EngineError }
 
 /** 按 §2.4 表把特征尺寸 v 换算为各形状几何；width/height 显式给出时优先（rect/ellipse/circle） */
-function buildGeometry(op: CreateOp): GeometryResult {
-  const size = resolveSize(op.size, SEMANTIC_SIZE.medium)
+function buildGeometry(state: SceneState, op: CreateOp): GeometryResult {
+  const size = resolveSize(state, op.size, SEMANTIC_SIZE.medium, 'feature')
   if (!size.ok) return size
   const v = size.v
-  const width = resolveSize(op.width, NaN)
+  const width = resolveSize(state, op.width, NaN, 'width')
   if (!width.ok) return width
-  const height = resolveSize(op.height, NaN)
+  const height = resolveSize(state, op.height, NaN, 'height')
   if (!height.ok) return height
   const w = width.v
   const h = height.v
@@ -152,33 +164,66 @@ function buildGeometry(op: CreateOp): GeometryResult {
   }
 }
 
-// ---------- 位置（绝对定位；相对/自动布局随 PR #6） ----------
-
-type PositionResult = { ok: true; x: number; y: number } | { ok: false; error: EngineError }
-
-function resolveCreatePosition(at: Position | undefined): PositionResult {
-  if (at === undefined) {
-    // 临时策略：画布中心。计划 PR #6 替换为 §5.2 自动布局算法
-    return { ok: true, x: CANVAS_WIDTH / 2, y: CANVAS_HEIGHT / 2 }
+/** 等比缩放几何字段（§5.5 对象大于画布时） */
+function scaleGeometry(geo: Partial<SceneObject>, s: number): Partial<SceneObject> {
+  const out: Partial<SceneObject> = { ...geo }
+  for (const k of ['radius', 'innerRadius', 'radiusX', 'radiusY', 'width', 'height', 'fontSize'] as const) {
+    if (out[k] !== undefined) out[k] = out[k]! * s
   }
-  if ('x' in at) return { ok: true, x: at.x, y: at.y }
-  return { ok: false, error: err('UNSUPPORTED_OP', '相对定位（ref/anchor）将在后续 PR 支持') }
+  if (out.points) out.points = out.points.map((p) => p * s)
+  return out
+}
+
+// ---------- 位置解析（§5.2 自动布局 / §5.3 相对定位） ----------
+
+type PositionResult = { ok: true; point: Point } | { ok: false; error: EngineError }
+
+/** 解析 Position 为目标中心点（w/h 为待放置对象的 bbox 尺寸） */
+function resolvePosition(state: SceneState, at: Position | undefined, w: number, h: number, focus?: SceneObject): PositionResult {
+  if (at === undefined) {
+    // §5.2 自动布局
+    return { ok: true, point: autoPlace(state.objects.map(bboxOf), focus && bboxOf(focus), w, h) }
+  }
+  if ('x' in at) return { ok: true, point: { x: at.x, y: at.y } }
+  // §5.3 相对定位
+  let p: Point
+  if (at.ref === 'canvas') {
+    p = placeInside(w, h, at.anchor, at.gap ?? CANVAS_PADDING)
+  } else {
+    const t = resolveTarget(state, at.ref)
+    if (!t.ok) return t
+    p = placeOutside(bboxOf(t.obj), w, h, at.anchor, at.gap ?? DEFAULT_GAP)
+  }
+  if (at.offset) p = { x: p.x + at.offset[0], y: p.y + at.offset[1] }
+  return { ok: true, point: p }
 }
 
 // ---------- 单 Op 执行 ----------
 
-type OpResult = { ok: true; state: SceneState } | { ok: false; error: EngineError }
+type OpResult = { ok: true; state: SceneState; notice?: string } | { ok: false; error: EngineError }
 
 const LINE_SHAPES = new Set(['line', 'polyline'])
 
 function execCreate(state: SceneState, op: CreateOp): OpResult {
-  const geo = buildGeometry(op)
+  const geo = buildGeometry(state, op)
   if (!geo.ok) return geo
-  const pos = resolveCreatePosition(op.at)
-  if (!pos.ok) return pos
 
+  // 探针对象：在 (0,0) 计算 bbox，得到尺寸与「中心相对锚点偏移」（points 类图形非零）
   const shapeSeq = (state.seqByShape[op.shape] ?? 0) + 1
   const id = `${op.shape}#${shapeSeq}`
+  const probe = { id, shape: op.shape, x: 0, y: 0, rotation: 0, z: 0, createdSeq: 0, ...geo.geo } as SceneObject
+  const [bx, by, bw, bh] = getBBox(probe)
+  const centerOffset = { x: bx + bw / 2, y: by + bh / 2 }
+
+  const focus = state.focusId ? state.objects.find((o) => o.id === state.focusId) : undefined
+  const pos = resolvePosition(state, op.at, bw, bh, focus)
+  if (!pos.ok) return pos
+
+  // §5.5 clamp
+  const c = clampCenter(pos.point.x, pos.point.y, bw, bh)
+  const finalGeo = c.scale !== undefined ? scaleGeometry(geo.geo, c.scale) : geo.geo
+  const s = c.scale ?? 1
+
   const isLine = LINE_SHAPES.has(op.shape)
   const isText = op.shape === 'text'
   const maxZ = state.objects.reduce((m, o) => Math.max(m, o.z), 0)
@@ -187,9 +232,9 @@ function execCreate(state: SceneState, op: CreateOp): OpResult {
     id,
     ...(op.name ? { name: op.name } : {}),
     shape: op.shape,
-    x: pos.x,
-    y: pos.y,
-    ...geo.geo,
+    x: c.x - centerOffset.x * s,
+    y: c.y - centerOffset.y * s,
+    ...finalGeo,
     // 缺省样式（规格 §2.4）：闭合图形缺省填充，线类缺省描边，文字缺省深色
     ...(isLine || isText
       ? {
@@ -215,6 +260,7 @@ function execCreate(state: SceneState, op: CreateOp): OpResult {
       seq: state.seq + 1,
       seqByShape: { ...state.seqByShape, [op.shape]: shapeSeq },
     },
+    ...(c.clamped ? { notice: `${id} 超出画布，已自动调整（§5.5 clamp）` } : {}),
   }
 }
 
@@ -245,19 +291,23 @@ function execOp(state: SceneState, op: Op): OpResult {
     case 'move': {
       const t = resolveTarget(state, op.target)
       if (!t.ok) return t
+      const b = bboxOf(t.obj)
+      const cur = getCenter(t.obj)
+      let desired: Point
       if (op.delta) {
-        return {
-          ok: true,
-          state: patchObject(state, t.obj.id, { x: t.obj.x + op.delta[0], y: t.obj.y + op.delta[1] }),
-        }
+        desired = { x: cur.x + op.delta[0], y: cur.y + op.delta[1] }
+      } else {
+        const to = op.to!
+        // move.to 解析与 create.at 一致（目标对象的 bbox 尺寸参与外贴/内贴计算）
+        const pos = resolvePosition(state, to, b.w, b.h)
+        if (!pos.ok) return pos
+        desired = pos.point
       }
-      // to：移动到目标中心（points 类图形按 bbox 中心换算）
-      const to = op.to!
-      if (!('x' in to)) return { ok: false, error: err('UNSUPPORTED_OP', '相对定位（ref/anchor）将在后续 PR 支持') }
-      const c = getCenter(t.obj)
+      const c = clampCenter(desired.x, desired.y, b.w, b.h)
       return {
         ok: true,
-        state: patchObject(state, t.obj.id, { x: t.obj.x + (to.x - c.x), y: t.obj.y + (to.y - c.y) }),
+        state: patchObject(state, t.obj.id, { x: t.obj.x + (c.x - cur.x), y: t.obj.y + (c.y - cur.y) }),
+        ...(c.clamped ? { notice: `${t.obj.id} 已拉回画布内（§5.5 clamp）` } : {}),
       }
     }
 
@@ -287,10 +337,12 @@ function execOp(state: SceneState, op: Op): OpResult {
 
 export function executeTransaction(state: SceneState, ops: Op[]): ExecOutcome {
   let current = state
+  const notices: string[] = []
   for (let i = 0; i < ops.length; i++) {
     const r = execOp(current, ops[i])
-    if (!r.ok) return { state: current, executed: i, error: r.error }
+    if (!r.ok) return { state: current, executed: i, error: r.error, ...(notices.length ? { notices } : {}) }
+    if (r.notice) notices.push(r.notice)
     current = r.state
   }
-  return { state: current, executed: ops.length }
+  return { state: current, executed: ops.length, ...(notices.length ? { notices } : {}) }
 }
