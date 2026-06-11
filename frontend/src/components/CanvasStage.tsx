@@ -53,7 +53,7 @@ export function CanvasStage({ scene }: { scene: SceneState }) {
         <Rect x={0} y={0} width={CANVAS_WIDTH} height={CANVAS_HEIGHT} fill="#ffffff" />
         {scene.objects.length === 0 && (
           <Text
-            text="空画布 1024 × 768 — 控制台 voiceDraw.exec(...) 可灌入 DSL"
+            text="空画布 1024 × 768 — 用右侧调试面板或控制台 voiceDraw.exec(...) 灌入 DSL"
             x={0}
             y={CANVAS_HEIGHT / 2 - 10}
             width={CANVAS_WIDTH}
