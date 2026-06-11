@@ -94,6 +94,7 @@ export default function App() {
           {voice.vadStatus === 'loading' ? '⏳ 加载 VAD…' : listening ? '🔴 停止聆听' : '🎤 开始聆听'}
         </button>
         <span className="status-pill">状态 {STATE_LABELS[voice.state]}</span>
+        <span className="status-pill">ASR {voice.providerName}</span>
         <span className="status-pill">
           对象 {scene.objects.length} ｜ 焦点 {scene.focusId ?? '无'} ｜ 撤销 {history.undoStack.length} / 重做{' '}
           {history.redoStack.length}
@@ -104,6 +105,9 @@ export default function App() {
           <div className="stage-frame">
             <CanvasStage scene={scene} />
           </div>
+          {voice.subtitle && (
+            <div className={`subtitle subtitle-${voice.subtitle.kind}`}>{voice.subtitle.text}</div>
+          )}
         </div>
         <DebugPanel
           entries={log}

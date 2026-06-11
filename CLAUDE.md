@@ -48,7 +48,8 @@ README.md
 6. feat: 自动布局与相对定位解析（外贴/内贴/clamp，规格 §5.2-5.5）✅(GH PR#7)
 7. feat: backend ASR WebSocket 转发协议（协议 §3.2）✅(GH PR#8)
 8. feat: 麦克风采集 + Silero VAD 断句 + 主状态机（协议 §4.1）✅(GH PR#9)
-9. feat: 七牛云流式 ASR + 实时字幕（WebSpeech 兜底切换）
+9. feat: 前端流式 ASR Provider + 实时字幕（网关 mock 全链路 + WebSpeech 兜底切换）
+9b. feat: 七牛云 ASR 真实上游接入（QiniuAsrUpstream，待密钥到位，前端零改动）
 
 **Day 3（M2 指令理解）**
 10. feat: lexicon 词表模块（颜色/形状/方位/量词，唯一来源，规格 §2）
