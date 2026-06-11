@@ -55,6 +55,7 @@ pnpm dev
 | vitest | 单元测试（前后端） |
 | ws | backend ASR WebSocket 网关与上游转发 |
 | @ricky0123/vad-web | Silero VAD 本地断句（WASM，静音帧不上传） |
+| pinyin-pro | 汉字转拼音（同音词纠错的拼音编辑距离回退） |
 | onnxruntime-web | VAD 模型推理运行时（资产本地化，不走 CDN） |
 | vite-plugin-static-copy | 构建期复制 VAD/ONNX 资产到产物 |
 | vite / @vitejs/plugin-react | 前端构建与开发服务器 |
