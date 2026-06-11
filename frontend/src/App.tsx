@@ -4,6 +4,7 @@ import { parseOps, type Op } from './dsl'
 import { createHistory, executeWithHistory, type HistoryOutcome, type HistoryState } from './engine/history'
 import { CanvasStage } from './components/CanvasStage'
 import { DebugPanel, type LogEntry } from './components/DebugPanel'
+import { buildAmbiguityClarify, matchExpecting, type ExpectingItem } from './nlu/clarify'
 import { correctTranscript } from './nlu/correction'
 import { parseWithLlm } from './nlu/llm'
 import { decideMode, parseRule } from './nlu/rules'
@@ -138,6 +139,12 @@ export default function App() {
   const recentRef = useRef<Array<{ utterance: string; summary: string }>>([])
   const lastTxRef = useRef<{ utterance: string; opCount: number } | undefined>(undefined)
 
+  // 歧义澄清窗口（规格 §5.7）：engine=快匹配后 byId 补全原 Op；llm=联合原话重新解析
+  type PendingClarify =
+    | { kind: 'engine'; remainingOps: Op[]; expecting: ExpectingItem[]; sayText?: string }
+    | { kind: 'llm'; original: string; expecting: ExpectingItem[] }
+  const pendingClarifyRef = useRef<PendingClarify | null>(null)
+
   const recordSuccess = useCallback((utterance: string, ops: Op[]) => {
     const summary = ops.map((o) => (o.op === 'create' ? `create ${o.shape}${o.name ? ` ${o.name}` : ''}` : o.op)).join('; ')
     recentRef.current = [...recentRef.current.slice(-2), { utterance, summary }]
@@ -168,10 +175,24 @@ export default function App() {
           d('PARSE_FAIL')
         }
       }
-      // 执行结果 → 播报文案：失败播错误码表文案（引擎 message 即口语化中文），成功播 sayText
-      const speakOutcome = (outcome: HistoryOutcome | { error: string }, sayText: string | undefined): boolean => {
+      // 执行结果 → 播报文案：失败播错误码表文案（引擎 message 即口语化中文），成功播 sayText。
+      // AMBIGUOUS_TARGET 拦截为澄清流程（§5.7）：列举候选特征 + 开 expecting 快匹配窗口
+      const speakOutcome = (outcome: HistoryOutcome | { error: string }, sayText: string | undefined, ops?: Op[]): boolean => {
         const err = 'error' in outcome ? outcome.error : undefined
         if (err !== undefined) {
+          if (typeof err !== 'string' && err.code === 'AMBIGUOUS_TARGET' && err.candidateIds !== undefined && ops !== undefined) {
+            const objs = err.candidateIds
+              .map((id) => historyRef.current.scene.objects.find((o) => o.id === id))
+              .filter((o): o is NonNullable<typeof o> => o !== undefined)
+            const plan = buildAmbiguityClarify(objs)
+            if (plan.kind === 'choices') {
+              const executed = 'executed' in outcome ? outcome.executed : 0
+              pendingClarifyRef.current = { kind: 'engine', remainingOps: ops.slice(executed), expecting: plan.expecting, sayText }
+              pushLog('warn', `歧义候选 ${err.candidateIds.join(' / ')} → 快匹配窗口：${plan.expecting.map((e) => e.label).join('｜')}`)
+            }
+            say(plan.question)
+            return false
+          }
           say(typeof err === 'string' ? '这个操作我没理解，请换个说法' : err.message)
           return false
         }
@@ -198,16 +219,39 @@ export default function App() {
       if (corr.applied.length > 0) {
         pushLog('info', `纠错：「${corr.original}」→「${corr.corrected}」`)
       }
+      let utterance = corr.corrected
+
+      // 澄清窗口期：先与 expecting 包含匹配（§5.7 快匹配）。
+      // 仅短回答参与（≤8 字），防止新长指令里偶含候选词被误吞；未命中即关窗按新指令解析
+      if (pendingClarifyRef.current !== null) {
+        const pending = pendingClarifyRef.current
+        const hit = utterance.length <= 8 ? matchExpecting(utterance, pending.expecting) : null
+        pendingClarifyRef.current = null
+        if (hit !== null && pending.kind === 'engine') {
+          pushLog('info', `澄清命中「${hit.label}」→ ${hit.id}，补全原指令直接执行（不走完整解析）`)
+          advance(true)
+          const first = pending.remainingOps[0]
+          const fixed = 'target' in first ? ({ ...first, target: { byId: hit.id } } as Op) : first
+          const ops = [fixed, ...pending.remainingOps.slice(1)]
+          if (speakOutcome(execOps(ops), pending.sayText ?? '好的', ops)) recordSuccess(utterance, ops)
+          return
+        }
+        if (hit !== null && pending.kind === 'llm') {
+          utterance = `${pending.original}，${hit.label}`
+          pushLog('info', `澄清命中「${hit.label}」→ 联合原话重新解析：「${utterance}」`)
+        }
+      }
+
       const scene = historyRef.current.scene
-      const r = parseRule(corr.corrected, {
+      const r = parseRule(utterance, {
         names: scene.objects.map((o) => o.name).filter((n): n is string => n !== undefined && n.length > 0),
         hasFocus: scene.focusId !== undefined,
       })
       if (r === null) {
-        const mode = decideMode(corr.corrected)
+        const mode = decideMode(utterance)
         pushLog('info', `规则未命中 → 升级 LLM（mode=${mode}）…`)
         void (async () => {
-          const llm = await parseWithLlm(corr.corrected, mode, {
+          const llm = await parseWithLlm(utterance, mode, {
             scene: historyRef.current.scene,
             asrAlternatives: corr.applied.length > 0 ? [corr.original] : [],
             recent: recentRef.current,
@@ -223,6 +267,14 @@ export default function App() {
           pushLog('info', `LLM 命中 ${res.source}（${res.latencyMs.toFixed(0)}ms，confidence ${res.confidence.toFixed(2)}）`)
           if (res.intent === 'clarify') {
             advance(false)
+            // LLM 给出 expecting → 开快匹配窗口，命中后联合原话重新解析（协议 §2.3）
+            if (res.clarify !== undefined && res.clarify.expecting.length > 0) {
+              pendingClarifyRef.current = {
+                kind: 'llm',
+                original: utterance,
+                expecting: res.clarify.expecting.map((label) => ({ label, id: '' })),
+              }
+            }
             say(res.clarify?.question ?? res.say ?? '能再说明确一点吗？')
             return
           }
@@ -232,7 +284,7 @@ export default function App() {
             return
           }
           advance(true)
-          if (speakOutcome(execOps(res.ops), res.say)) recordSuccess(corr.corrected, res.ops)
+          if (speakOutcome(execOps(res.ops), res.say, res.ops)) recordSuccess(utterance, res.ops)
         })()
         return
       }
@@ -250,7 +302,7 @@ export default function App() {
         return
       }
       advance(true)
-      if (speakOutcome(execOps(r.ops), r.say)) recordSuccess(corr.corrected, r.ops)
+      if (speakOutcome(execOps(r.ops), r.say, r.ops)) recordSuccess(utterance, r.ops)
     },
     [execOps, pushLog, recordSuccess, say],
   )
