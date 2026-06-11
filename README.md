@@ -62,7 +62,7 @@ pnpm dev
 | typescript | 类型系统（前后端） |
 | express | backend HTTP 服务（密钥隔离代理） |
 | dotenv | backend 环境变量加载 |
-| tsx | backend TS 直跑（开发期） |
+| tsx | TS 直跑（backend 开发期 + 前端 Prompt 生成脚本） |
 | concurrently | 一条命令并行启动前后端 |
 
 > 新增依赖随对应 PR 同步更新本表。
