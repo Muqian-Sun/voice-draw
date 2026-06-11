@@ -2,6 +2,7 @@ import type { RefObject } from 'react'
 import { Circle, Ellipse, Layer, Line, Rect, RegularPolygon, Stage, Star, Text } from 'react-konva'
 import type Konva from 'konva'
 import { CANVAS_WIDTH, CANVAS_HEIGHT } from '../dsl'
+import { getBBox } from '../engine/scene'
 import type { SceneObject, SceneState } from '../engine/scene'
 
 /** SceneObject → Konva 节点。坐标约定见 engine/scene.ts：(x,y) 为中心点 */
@@ -69,6 +70,27 @@ export function CanvasStage({ scene, stageRef }: { scene: SceneState; stageRef?:
         {sorted.map((o) => (
           <ShapeNode key={o.id} o={o} />
         ))}
+      </Layer>
+      {/* 焦点高亮（指代"它"的可视反馈，§5.1）。独立 overlay 层，PNG 导出时临时隐藏 */}
+      <Layer name="overlay" listening={false}>
+        {(() => {
+          const focus = scene.objects.find((o) => o.id === scene.focusId)
+          if (!focus) return null
+          const [bx, by, bw, bh] = getBBox(focus)
+          const pad = 6
+          return (
+            <Rect
+              x={bx - pad}
+              y={by - pad}
+              width={bw + pad * 2}
+              height={bh + pad * 2}
+              stroke="#2563EB"
+              strokeWidth={1.5}
+              dash={[6, 4]}
+              cornerRadius={4}
+            />
+          )
+        })()}
       </Layer>
     </Stage>
   )

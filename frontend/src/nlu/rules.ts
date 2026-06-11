@@ -207,7 +207,7 @@ interface TargetMatch {
 
 /**
  * 优先级：已命名对象 → [颜色?][序数?][形状] byQuery → 序数单独成分 → 指代词 byFocus。
- * "那个/这个"紧跟查询成分时作限定词消费（"那个红色的圆"），单独出现才是 byFocus。
+ * 指代词紧跟查询成分时作限定词消费（"那个红色的圆""刚才那个圆"），单独出现才是 byFocus。
  * mask：调用方排除的下标（如 T1 中被创建的形状本体）。
  */
 function findTarget(tokens: Token[], mask: ReadonlySet<number> = new Set()): TargetMatch | null {
@@ -233,8 +233,8 @@ function findTarget(tokens: Token[], mask: ReadonlySet<number> = new Set()): Tar
       } else if (t.kind === 'ordinal' && q.ordinal === undefined) {
         q.ordinal = t.value
         idxs.push(i)
-      } else if (t.kind === 'deixis' && (t.text === '那个' || t.text === '这个')) {
-        idxs.push(i) // 限定词
+      } else if (t.kind === 'deixis') {
+        idxs.push(i) // 紧跟查询成分的指代词一律作限定词（那个/这个/刚才那个/刚画的 + 形状）
       } else {
         break
       }
