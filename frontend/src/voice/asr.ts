@@ -4,7 +4,7 @@
  * 会话模型：VAD 持有唯一音频管线并负责断句，Provider 只消费——
  *   onSpeechStart → startSession()；逐帧 pushAudio()；onSpeechEnd → endSession() → 等 final。
  * 实现：
- * - GatewayAsr：走 backend ws 网关（协议 §3.2），上游为七牛/mock 由 backend 决定
+ * - GatewayAsr：走 backend ws 网关（协议 §3.2），上游为火山引擎豆包/mock 由 backend 决定
  * - WebSpeechAsr：浏览器内建识别兜底（自行采音，pushAudio/endSession 为空操作）
  */
 import { float32ToPcm16Base64 } from './pcm'
