@@ -8,7 +8,7 @@ import { correctTranscript } from './nlu/correction'
 import { parseWithLlm } from './nlu/llm'
 import { decideMode, parseRule } from './nlu/rules'
 import { CONFIRM_YES_WORDS } from './shared/lexicon'
-import { STATE_LABELS, type VoiceEvent } from './voice/fsm'
+import { CONFIRM_WINDOW_MS, STATE_LABELS, type VoiceEvent, type VoiceState } from './voice/fsm'
 import { GatewayTts, TtsOrchestrator, WebSpeechTts } from './voice/tts'
 import { useVoice } from './voice/useVoice'
 
@@ -71,7 +71,21 @@ export default function App() {
   )
 
   // 语音 FSM 接口（useVoice 在下方创建，经 ref 解循环依赖；面板输入时 state=idle，dispatch 自然空转）
-  const voiceApiRef = useRef<{ dispatch: (e: VoiceEvent) => void; setTtsActive: (a: boolean) => void } | null>(null)
+  const voiceApiRef = useRef<{
+    dispatch: (e: VoiceEvent) => void
+    setTtsActive: (a: boolean) => void
+    getState: () => VoiceState
+  } | null>(null)
+
+  // 破坏性操作确认窗口（协议 §4.3）：语音走 awaitConfirm 子态 + 5s 超时；面板文本同语义（无超时）
+  const pendingConfirmRef = useRef<Op[] | null>(null)
+  const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const clearConfirmTimer = useCallback(() => {
+    if (confirmTimerRef.current !== null) {
+      clearTimeout(confirmTimerRef.current)
+      confirmTimerRef.current = null
+    }
+  }, [])
 
   // TTS 编排：网关（豆包语音合成 1.0）→ speechSynthesis 兜底；播报期间半双工互斥
   const ttsRef = useRef<TtsOrchestrator | null>(null)
@@ -80,13 +94,32 @@ export default function App() {
       ttsRef.current = new TtsOrchestrator(new GatewayTts(`http://${location.hostname}:8787`), new WebSpeechTts(), {
         onLog: pushLog,
         onSpeakingChange: (speaking) => {
-          voiceApiRef.current?.setTtsActive(speaking)
-          if (!speaking) voiceApiRef.current?.dispatch('TTS_END')
+          const api = voiceApiRef.current
+          api?.setTtsActive(speaking)
+          if (speaking || !api) return
+          // 播报结束：有待确认操作 → 进入确认窗口（协议 §4.3），否则回聆听
+          if (pendingConfirmRef.current !== null) {
+            api.dispatch('AWAIT_CONFIRM')
+            if (api.getState() === 'awaitConfirm') {
+              clearConfirmTimer()
+              confirmTimerRef.current = setTimeout(() => {
+                confirmTimerRef.current = null
+                if (pendingConfirmRef.current === null) return
+                pendingConfirmRef.current = null
+                pushLog('info', '确认窗口超时（5s），视为取消')
+                api.dispatch('CONFIRM_TIMEOUT')
+                pushLog('info', '🔊 已取消')
+                void ttsRef.current?.speak('已取消')
+              }, CONFIRM_WINDOW_MS)
+            }
+            return
+          }
+          api.dispatch('TTS_END')
         },
       })
     }
     return ttsRef.current
-  }, [pushLog])
+  }, [clearConfirmTimer, pushLog])
 
   /** 播报 + 日志；text 为空时仅推进状态机（speaking → listening） */
   const say = useCallback(
@@ -101,8 +134,6 @@ export default function App() {
     [getTts, pushLog],
   )
 
-  // 破坏性操作确认窗口（协议 §4.3）：语音 FSM 子态接入前由文本入口承担同语义
-  const pendingConfirmRef = useRef<Op[] | null>(null)
   // 最近 3 轮成功指令（协议 §2.2 recent，供 LLM 多轮指代）
   const recentRef = useRef<Array<{ utterance: string; summary: string }>>([])
   const lastTxRef = useRef<{ utterance: string; opCount: number } | undefined>(undefined)
@@ -150,6 +181,7 @@ export default function App() {
 
       // 确认窗口期：命中肯定词执行，其余任何输入视为否定（规格 §2.6 保守策略）
       if (pendingConfirmRef.current !== null) {
+        clearConfirmTimer()
         const pending = pendingConfirmRef.current
         pendingConfirmRef.current = null
         if (CONFIRM_YES_WORDS.includes(trimmed)) {
@@ -237,7 +269,7 @@ export default function App() {
 
   // 语音 final → 同一理解通道（纠错 → 规则 → LLM），与调试面板共用
   const voice = useVoice({ onLog: pushLog, onUtterance: (text) => execText(text) })
-  voiceApiRef.current = { dispatch: voice.dispatch, setTtsActive: voice.setTtsActive }
+  voiceApiRef.current = { dispatch: voice.dispatch, setTtsActive: voice.setTtsActive, getState: voice.getState }
 
   const scene = history.scene
   const op = (o: Op) => () => execOps(o)
