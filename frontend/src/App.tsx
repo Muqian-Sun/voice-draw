@@ -30,6 +30,7 @@ export default function App() {
       const outcome = executeWithHistory(historyRef.current, parsed.ops)
       historyRef.current = outcome.history
       setHistory(outcome.history)
+      outcome.notices?.forEach((n) => pushLog('warn', `⚙ ${n}`))
       if (outcome.error) {
         pushLog(
           outcome.executed > 0 ? 'warn' : 'error',

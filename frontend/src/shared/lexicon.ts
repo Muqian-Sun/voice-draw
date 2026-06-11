@@ -19,6 +19,8 @@ export type SemanticSize = keyof typeof SEMANTIC_SIZE
 export const DEFAULT_GAP = 20
 /** ref=canvas 内贴时的内边距（规格 §2.4） */
 export const CANVAS_PADDING = 40
+/** 自动布局尝试焦点四侧时的间距（规格 §5.2） */
+export const AUTO_LAYOUT_GAP = 40
 
 /** 缺省样式（规格 §2.4）：闭合图形缺省填充；线类缺省描边；文字缺省颜色 */
 export const DEFAULT_STYLE = {
