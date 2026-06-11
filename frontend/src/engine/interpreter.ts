@@ -1,9 +1,10 @@
 /**
  * DSL 解释器（规格 §5 执行语义）
  *
- * 本 PR 范围：create / style / move / delete + 目标解析（§1.3）+ 焦点规则（§5.1）。
+ * 已支持：create / style / move / delete / clear + 目标解析（§1.3）+ 焦点规则（§5.1）。
+ * undo/redo 由上层 history.ts 快照栈处理（§5.4），不进入本解释器。
  * 暂不支持（按 PR 计划逐步消除，返回 UNSUPPORTED_OP）：
- * - undo/redo/clear（计划 PR #4 事务栈）、相对定位与自动布局（PR #6）、
+ * - 相对定位与自动布局（计划 PR #6）、
  *   resize/rotate/rename/setText/zorder/group/focus/export（随对应功能 PR 接入）
  *
  * executeTransaction 是纯函数：不修改入参，返回新 SceneState——
@@ -22,6 +23,7 @@ export type EngineErrorCode =
   | 'AMBIGUOUS_TARGET'
   | 'INVALID_OP'
   | 'NOTHING_TO_UNDO'
+  | 'NOTHING_TO_REDO'
   | 'UNSUPPORTED_OP'
 
 export interface EngineError {
@@ -271,6 +273,10 @@ function execOp(state: SceneState, op: Op): OpResult {
         },
       }
     }
+
+    case 'clear':
+      // 普通事务语义、可被撤销（规格 §5.4）；id 计数不重置，保证 id 全程不复用
+      return { ok: true, state: { ...state, objects: [], focusId: undefined } }
 
     default:
       return { ok: false, error: err('UNSUPPORTED_OP', `操作 ${op.op} 将在后续 PR 支持`) }
