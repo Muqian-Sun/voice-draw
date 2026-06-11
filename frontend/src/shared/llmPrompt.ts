@@ -20,7 +20,7 @@ export function buildSystemPrompt(): string {
   return `你是一个语音绘图工具的指令解析器。用户通过语音下达绘图指令，你把中文口语转换成 JSON 绘图操作。
 
 # 输出格式
-你必须只输出一个 JSON 对象，不要输出任何其他文字：
+你必须只输出一个 JSON 对象，压缩为单行（不要缩进、换行和注释），不要输出任何其他文字：
 {
   "intent": "ops" | "clarify" | "reject",
   "confidence": 0到1的数字,

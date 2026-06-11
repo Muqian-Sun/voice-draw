@@ -33,7 +33,7 @@ docs/       # 设计文档（4 份）+ 评审材料
 README.md
 ```
 
-`backend/.env.example` 列出全部环境变量（七牛 ASR/LLM/TTS 密钥）；README 写明无密钥时的降级运行方式。
+`backend/.env.example` 列出全部环境变量（火山 ASR、火山方舟 LLM、TTS 密钥）；README 写明无密钥时的降级运行方式。
 
 ## PR 拆分计划（20 个，对齐 M0~M4，每日 3~5 个）
 
