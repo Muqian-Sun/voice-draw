@@ -3,7 +3,7 @@
  *
  * 音频通路：VAD 持有麦克风 → 说话期间逐帧推给 AsrProvider（句首回填 4 帧 ring buffer）
  * → 断句时 endSession → partial 驱动实时字幕，final 经 onUtterance 进理解通道（纠错 → 规则 → LLM）。
- * Provider 策略：默认走 backend 网关（七牛/mock 由后端定）；网关 3 连败或不可恢复错误
+ * Provider 策略：默认走 backend 网关（火山引擎豆包/mock 由后端定）；网关 3 连败或不可恢复错误
  * 自动切 WebSpeech 兜底（协议 §3.1/§3.2）。
  */
 import { useCallback, useRef, useState } from 'react'
