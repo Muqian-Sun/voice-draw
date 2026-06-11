@@ -84,8 +84,8 @@ export function executeWithHistory(h: HistoryState, ops: Op[]): HistoryOutcome {
 
   // 普通（变更类）事务
   const r = executeTransaction(h.scene, ops)
-  if (r.executed === 0) {
-    // 无任何生效 Op：不产生快照，redo 栈保留
+  if (r.executed === 0 || r.state === h.scene) {
+    // 无任何生效 Op / 状态未变（如纯 export 事务）：不产生快照，redo 栈保留
     return { history: h, ...r }
   }
   const undoStack = [...h.undoStack, h.scene]

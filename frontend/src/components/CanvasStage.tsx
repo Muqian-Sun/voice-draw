@@ -1,4 +1,6 @@
+import type { RefObject } from 'react'
 import { Circle, Ellipse, Layer, Line, Rect, RegularPolygon, Stage, Star, Text } from 'react-konva'
+import type Konva from 'konva'
 import { CANVAS_WIDTH, CANVAS_HEIGHT } from '../dsl'
 import type { SceneObject, SceneState } from '../engine/scene'
 
@@ -45,10 +47,10 @@ function ShapeNode({ o }: { o: SceneObject }) {
   }
 }
 
-export function CanvasStage({ scene }: { scene: SceneState }) {
+export function CanvasStage({ scene, stageRef }: { scene: SceneState; stageRef?: RefObject<Konva.Stage | null> }) {
   const sorted = [...scene.objects].sort((a, b) => a.z - b.z)
   return (
-    <Stage width={CANVAS_WIDTH} height={CANVAS_HEIGHT}>
+    <Stage ref={stageRef} width={CANVAS_WIDTH} height={CANVAS_HEIGHT}>
       <Layer listening={false}>
         <Rect x={0} y={0} width={CANVAS_WIDTH} height={CANVAS_HEIGHT} fill="#ffffff" />
         {scene.objects.length === 0 && (
