@@ -60,7 +60,7 @@ README.md
 14. feat: 焦点对象与指代消解（规格 §5.1）✅(GH PR#18)
 
 **Day 4（M3 拆解+反馈闭环）**
-15. feat: TTS 反馈编排（七牛 TTS + speechSynthesis 兜底、半双工互斥）
+15. feat: TTS 反馈编排（豆包语音合成 1.0 + speechSynthesis 兜底、半双工互斥）
 16. feat: 破坏性操作语音确认（confirm-pending，协议 §4.3）
 17. feat: 歧义澄清多轮（AMBIGUOUS_TARGET + expecting 快匹配，规格 §5.7）
 18. feat: plan 模式创作拆解（自动编组 + desc 进度播报）

@@ -40,6 +40,7 @@ export function useVoice({ onLog, onUtterance }: UseVoiceOptions) {
   const vadRef = useRef<MicVadLike | null>(null)
   const providerRef = useRef<AsrProvider | null>(null)
   const speakingRef = useRef(false)
+  const ttsActiveRef = useRef(false) // 半双工互斥：TTS 播报期间丢弃麦克风帧（防自激）
   const ringRef = useRef<Float32Array[]>([])
   const finalTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const subtitleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -64,13 +65,23 @@ export function useVoice({ onLog, onUtterance }: UseVoiceOptions) {
     }
   }, [])
 
-  /** PR #12/#13 前的 stub：final 后走播报占位回到聆听，保持状态机循环 */
+  /** 兜底收尾（final 超时/空转写/ASR 错误）：无播报内容，直接走完状态环 */
   const finishTurn = useCallback(() => {
     if (stateRef.current === 'parsing') {
       dispatch('PARSE_FAIL')
       dispatch('TTS_END')
     }
   }, [dispatch])
+
+  /** TTS 编排回调：播报开始/结束切换拾音门控（协议 §3 半双工约束） */
+  const setTtsActive = useCallback((active: boolean) => {
+    ttsActiveRef.current = active
+    if (active) {
+      // 播报开始时若正处说话段，丢弃该段（混入了扬声器声音）
+      speakingRef.current = false
+      ringRef.current = []
+    }
+  }, [])
 
   const buildEvents = useCallback((): AsrEvents => {
     return {
@@ -82,9 +93,11 @@ export function useVoice({ onLog, onUtterance }: UseVoiceOptions) {
         if (r.text.trim()) {
           showSubtitle({ text: r.text, kind: 'final' })
           onLog('info', `📝 转写：「${r.text}」（置信度 ${r.confidence.toFixed(2)}）`)
+          // 后续状态环（PARSE_DONE/EXEC_DONE/TTS_END）由理解层经 dispatch 驱动
           onUtterance?.(r.text, r.confidence, r.alternatives)
+        } else {
+          finishTurn()
         }
-        finishTurn()
       },
       onError: (code, recoverable) => {
         onLog(recoverable ? 'warn' : 'error', `ASR 错误：${code}${recoverable ? '' : '（不可恢复）'}`)
@@ -132,6 +145,7 @@ export function useVoice({ onLog, onUtterance }: UseVoiceOptions) {
         minSpeechMs: 96,
         preSpeechPadMs: 128,
         onSpeechStart: () => {
+          if (ttsActiveRef.current) return // 半双工：播报期间不开识别会话
           speakingRef.current = true
           const p = ensureProvider()
           p.startSession()
@@ -140,6 +154,7 @@ export function useVoice({ onLog, onUtterance }: UseVoiceOptions) {
           onLog('info', '🎤 检测到语音…')
         },
         onFrameProcessed: (_probs: unknown, frame: Float32Array) => {
+          if (ttsActiveRef.current) return // 半双工：丢弃播报期间的帧
           if (speakingRef.current) {
             providerRef.current?.pushAudio(frame)
           } else {
@@ -148,6 +163,7 @@ export function useVoice({ onLog, onUtterance }: UseVoiceOptions) {
           }
         },
         onSpeechEnd: (audio: Float32Array) => {
+          if (!speakingRef.current) return // 播报门控丢弃的段，不进解析
           speakingRef.current = false
           const ms = Math.round(audio.length / 16)
           onLog('info', `🎤 断句：${ms}ms，等待转写…`)
@@ -190,5 +206,5 @@ export function useVoice({ onLog, onUtterance }: UseVoiceOptions) {
     onLog('info', '已停止聆听')
   }, [dispatch, onLog])
 
-  return { state, vadStatus, providerName, subtitle, start, stop }
+  return { state, vadStatus, providerName, subtitle, start, stop, dispatch, setTtsActive }
 }

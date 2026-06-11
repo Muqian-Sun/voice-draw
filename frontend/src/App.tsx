@@ -8,7 +8,8 @@ import { correctTranscript } from './nlu/correction'
 import { parseWithLlm } from './nlu/llm'
 import { decideMode, parseRule } from './nlu/rules'
 import { CONFIRM_YES_WORDS } from './shared/lexicon'
-import { STATE_LABELS } from './voice/fsm'
+import { STATE_LABELS, type VoiceEvent } from './voice/fsm'
+import { GatewayTts, TtsOrchestrator, WebSpeechTts } from './voice/tts'
 import { useVoice } from './voice/useVoice'
 
 let logSeq = 0
@@ -69,6 +70,37 @@ export default function App() {
     [pushLog],
   )
 
+  // 语音 FSM 接口（useVoice 在下方创建，经 ref 解循环依赖；面板输入时 state=idle，dispatch 自然空转）
+  const voiceApiRef = useRef<{ dispatch: (e: VoiceEvent) => void; setTtsActive: (a: boolean) => void } | null>(null)
+
+  // TTS 编排：网关（豆包语音合成 1.0）→ speechSynthesis 兜底；播报期间半双工互斥
+  const ttsRef = useRef<TtsOrchestrator | null>(null)
+  const getTts = useCallback(() => {
+    if (ttsRef.current === null) {
+      ttsRef.current = new TtsOrchestrator(new GatewayTts(`http://${location.hostname}:8787`), new WebSpeechTts(), {
+        onLog: pushLog,
+        onSpeakingChange: (speaking) => {
+          voiceApiRef.current?.setTtsActive(speaking)
+          if (!speaking) voiceApiRef.current?.dispatch('TTS_END')
+        },
+      })
+    }
+    return ttsRef.current
+  }, [pushLog])
+
+  /** 播报 + 日志；text 为空时仅推进状态机（speaking → listening） */
+  const say = useCallback(
+    (text: string | undefined) => {
+      if (text === undefined || text.length === 0) {
+        voiceApiRef.current?.dispatch('TTS_END')
+        return
+      }
+      pushLog('info', `🔊 ${text}`)
+      void getTts().speak(text)
+    },
+    [getTts, pushLog],
+  )
+
   // 破坏性操作确认窗口（协议 §4.3）：语音 FSM 子态接入前由文本入口承担同语义
   const pendingConfirmRef = useRef<Op[] | null>(null)
   // 最近 3 轮成功指令（协议 §2.2 recent，供 LLM 多轮指代）
@@ -94,15 +126,38 @@ export default function App() {
         return
       }
 
+      // FSM 推进（语音轮次有效；面板输入时 state=idle，transition 为 null 自然空转）
+      const advance = (ok: boolean) => {
+        const d = voiceApiRef.current?.dispatch
+        if (!d) return
+        if (ok) {
+          d('PARSE_DONE')
+          d('EXEC_DONE')
+        } else {
+          d('PARSE_FAIL')
+        }
+      }
+      // 执行结果 → 播报文案：失败播错误码表文案（引擎 message 即口语化中文），成功播 sayText
+      const speakOutcome = (outcome: HistoryOutcome | { error: string }, sayText: string | undefined): boolean => {
+        const err = 'error' in outcome ? outcome.error : undefined
+        if (err !== undefined) {
+          say(typeof err === 'string' ? '这个操作我没理解，请换个说法' : err.message)
+          return false
+        }
+        say(sayText)
+        return true
+      }
+
       // 确认窗口期：命中肯定词执行，其余任何输入视为否定（规格 §2.6 保守策略）
       if (pendingConfirmRef.current !== null) {
         const pending = pendingConfirmRef.current
         pendingConfirmRef.current = null
         if (CONFIRM_YES_WORDS.includes(trimmed)) {
-          pushLog('info', '🔊 已确认')
-          execOps(pending)
+          advance(true)
+          speakOutcome(execOps(pending), '已清空')
         } else {
-          pushLog('info', '🔊 已取消')
+          advance(false)
+          say('已取消')
         }
         return
       }
@@ -128,40 +183,44 @@ export default function App() {
           })
           if (!llm.ok) {
             pushLog('error', `LLM 解析失败：${llm.error}`)
-            pushLog('warn', '🔊 没听懂，请换个说法')
+            advance(false)
+            say('没听懂，请换个说法')
             return
           }
           const res = llm.result
           pushLog('info', `LLM 命中 ${res.source}（${res.latencyMs.toFixed(0)}ms，confidence ${res.confidence.toFixed(2)}）`)
           if (res.intent === 'clarify') {
-            pushLog('warn', `🔊 ${res.clarify?.question ?? res.say ?? '能再说明确一点吗？'}`)
+            advance(false)
+            say(res.clarify?.question ?? res.say ?? '能再说明确一点吗？')
             return
           }
           if (res.intent === 'reject') {
-            pushLog('warn', `🔊 ${res.say ?? '这个我帮不了，试试绘图指令'}`)
+            advance(false)
+            say(res.say ?? '这个我帮不了，试试绘图指令')
             return
           }
-          if (res.say !== undefined) pushLog('info', `🔊 ${res.say}`)
-          const outcome = execOps(res.ops)
-          if (!('error' in outcome && outcome.error)) recordSuccess(corr.corrected, res.ops)
+          advance(true)
+          if (speakOutcome(execOps(res.ops), res.say)) recordSuccess(corr.corrected, res.ops)
         })()
         return
       }
       pushLog('info', `规则命中 ${r.template}（${r.latencyMs.toFixed(1)}ms）`)
       if (r.intent === 'confirm-pending') {
         pendingConfirmRef.current = r.ops
-        pushLog('warn', `🔊 ${r.say}（输入「确认」执行，其他任意输入取消）`)
+        pushLog('warn', '确认窗口：输入/说「确认」执行，其他任意输入取消')
+        advance(false)
+        say(r.say)
         return
       }
       if (r.intent === 'clarify') {
-        pushLog('warn', `🔊 ${r.say}`)
+        advance(false)
+        say(r.say)
         return
       }
-      if (r.say !== undefined) pushLog('info', `🔊 ${r.say}`)
-      const outcome = execOps(r.ops)
-      if (!('error' in outcome && outcome.error)) recordSuccess(corr.corrected, r.ops)
+      advance(true)
+      if (speakOutcome(execOps(r.ops), r.say)) recordSuccess(corr.corrected, r.ops)
     },
-    [execOps, pushLog, recordSuccess],
+    [execOps, pushLog, recordSuccess, say],
   )
 
   // 控制台入口与面板共用同一执行通道
@@ -178,6 +237,7 @@ export default function App() {
 
   // 语音 final → 同一理解通道（纠错 → 规则 → LLM），与调试面板共用
   const voice = useVoice({ onLog: pushLog, onUtterance: (text) => execText(text) })
+  voiceApiRef.current = { dispatch: voice.dispatch, setTtsActive: voice.setTtsActive }
 
   const scene = history.scene
   const op = (o: Op) => () => execOps(o)
