@@ -17,7 +17,7 @@
 
 ## 架构
 
-三层指令理解 + 统一绘图 DSL：本地规则快路径（高频指令 <50ms 零成本）→ LLM 结构化解析（空间关系/指代）→ Agent 创作拆解（组合图案）。所有理解层输出同一套 JSON 原子操作，执行引擎基于 Konva 场景图渲染，天然支持事务式 undo/redo。语音输入为本地 VAD 断句 + 七牛云流式 ASR（WebSpeech 兜底），反馈经七牛 TTS 播报闭环。
+三层指令理解 + 统一绘图 DSL：本地规则快路径（高频指令 <50ms 零成本）→ LLM 结构化解析（空间关系/指代）→ Agent 创作拆解（组合图案）。所有理解层输出同一套 JSON 原子操作，执行引擎基于 Konva 场景图渲染，天然支持事务式 undo/redo。语音输入为本地 VAD 断句 + 火山引擎豆包流式 ASR（mock/WebSpeech 兜底），反馈经七牛 TTS 播报闭环。
 
 详见 [架构设计与开发计划](docs/题目二-架构设计与开发计划.md)、[交互协议规范](docs/题目二-交互协议规范.md)。
 
@@ -29,8 +29,8 @@
 # 1. 安装依赖
 pnpm install
 
-# 2. （可选）配置七牛云密钥——不配置也能启动，自动降级
-cp backend/.env.example backend/.env   # 填写 QINIU_API_KEY
+# 2. （可选）配置密钥——不配置也能启动，自动降级
+cp backend/.env.example backend/.env   # ASR 填火山引擎 VOLC_API_KEY；LLM/TTS 填七牛 QINIU_API_KEY
 
 # 3. 一条命令启动前后端
 pnpm dev
@@ -41,7 +41,7 @@ pnpm dev
 # curl http://localhost:8787/healthz 应返回 {"ok":true,...}
 ```
 
-**无密钥降级**：未配置 `QINIU_API_KEY` 时，ASR 自动切换浏览器 WebSpeech；LLM 解析不可用时规则层指令（创建/移动/缩放/撤销等）仍可用，亦可用调试面板文本输入验证全链路。
+**无密钥降级**：未配置 `VOLC_API_KEY` 时 ASR 走 mock 上游（固定话术演示），网关不可用再降浏览器 WebSpeech；未配置 `QINIU_API_KEY` 时，LLM 解析不可用时规则层指令（创建/移动/缩放/撤销等）仍可用，亦可用调试面板文本输入验证全链路。
 
 ## 第三方依赖列表
 
