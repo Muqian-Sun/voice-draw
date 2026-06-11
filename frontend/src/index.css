@@ -38,13 +38,124 @@ body {
   color: #6b7280;
 }
 
+.workspace {
+  flex: 1;
+  display: flex;
+  gap: 16px;
+  padding: 20px;
+  overflow: hidden;
+  min-height: 0;
+}
+
 .canvas-wrap {
   flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 20px;
   overflow: auto;
+  min-width: 0;
+}
+
+.debug-panel {
+  width: 380px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 14px;
+  overflow: hidden;
+}
+
+.debug-panel-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #6b7280;
+}
+
+.debug-input {
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  resize: vertical;
+  outline: none;
+}
+
+.debug-input:focus {
+  border-color: #6366f1;
+}
+
+.debug-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.debug-actions button {
+  font-size: 13px;
+  padding: 5px 14px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #f9fafb;
+  cursor: pointer;
+}
+
+.debug-actions button:hover {
+  background: #eef2ff;
+  border-color: #6366f1;
+}
+
+.debug-actions button:first-child {
+  background: #6366f1;
+  border-color: #6366f1;
+  color: #ffffff;
+}
+
+.debug-log {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  border-top: 1px solid #f3f4f6;
+  padding-top: 8px;
+  min-height: 0;
+}
+
+.debug-log-empty {
+  color: #9ca3af;
+  font-family: inherit;
+}
+
+.debug-log-entry {
+  display: flex;
+  gap: 8px;
+  word-break: break-all;
+}
+
+.debug-log-time {
+  color: #9ca3af;
+  flex-shrink: 0;
+}
+
+.debug-log-info {
+  color: #374151;
+}
+
+.debug-log-warn {
+  color: #b45309;
+}
+
+.debug-log-error {
+  color: #dc2626;
 }
 
 .stage-frame {
