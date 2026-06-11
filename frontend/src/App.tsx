@@ -43,8 +43,13 @@ export default function App() {
       if (!outcome.error && parsed.ops.some((o) => o.op === 'export')) {
         const stage = stageRef.current
         if (stage) {
+          // 焦点高亮属交互反馈，不进导出图
+          const overlay = stage.findOne<Konva.Layer>('.overlay')
+          overlay?.visible(false)
+          const url = stage.toDataURL({ pixelRatio: 2 })
+          overlay?.visible(true)
           const a = document.createElement('a')
-          a.href = stage.toDataURL({ pixelRatio: 2 })
+          a.href = url
           a.download = `voicedraw-${Date.now()}.png`
           a.click()
         }

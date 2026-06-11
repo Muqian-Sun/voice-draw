@@ -228,3 +228,18 @@ describe('decideMode（§4.3）', () => {
     expect(decideMode('把它移到右边')).toBe('parse')
   })
 })
+
+describe('指代限定词（§5.1 指代消解）', () => {
+  it('"刚才那个圆"/"刚画的圆"→ byQuery（指代词作限定词消费）', () => {
+    expect(parseRule('把刚才那个圆删掉')?.ops).toEqual([{ op: 'delete', target: { byQuery: { shape: 'circle' } } }])
+    expect(parseRule('把刚画的圆涂成蓝色')?.ops).toEqual([
+      { op: 'style', target: { byQuery: { shape: 'circle' } }, fill: '#0074D9' },
+    ])
+  })
+
+  it('指代词单独出现仍是 byFocus', () => {
+    expect(parseRule('把刚才那个删掉', { hasFocus: true })?.ops).toEqual([
+      { op: 'delete', target: { byFocus: true } },
+    ])
+  })
+})

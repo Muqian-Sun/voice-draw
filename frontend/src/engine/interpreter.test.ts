@@ -289,3 +289,39 @@ describe('修改类操作补全（resize/rotate/rename/setText/zorder/focus/expo
     expect(r.notices?.[0]).toContain('导出')
   })
 })
+
+describe('焦点更新规则逐条（§5.1 表格）', () => {
+  it('事务含多个 create → 焦点 = 最后一个 create 的对象', () => {
+    const s = run([
+      { op: 'create', shape: 'circle' },
+      { op: 'create', shape: 'rect', at: { x: 200, y: 200 } },
+    ])
+    expect(s.focusId).toBe('rect#1')
+  })
+
+  it('修改类操作（style/move/resize/rotate/rename）→ 焦点 = 被操作对象', () => {
+    const s0 = run([
+      { op: 'create', shape: 'circle', name: 'a' },
+      { op: 'create', shape: 'rect', name: 'b', at: { x: 200, y: 200 } },
+    ])
+    for (const op of [
+      { op: 'style', target: { byName: 'a' }, fill: '#FFDC00' },
+      { op: 'move', target: { byName: 'a' }, delta: [10, 0] },
+      { op: 'resize', target: { byName: 'a' }, scale: 1.1 },
+      { op: 'rotate', target: { byName: 'a' }, degrees: 10 },
+      { op: 'rename', target: { byName: 'a' }, name: 'a' },
+    ] as const) {
+      expect(run([op as Op], s0).focusId).toBe('circle#1')
+    }
+  })
+
+  it('delete / clear → 焦点清空；focus → 显式设置', () => {
+    const s0 = run([
+      { op: 'create', shape: 'circle' },
+      { op: 'create', shape: 'rect', at: { x: 200, y: 200 } },
+    ])
+    expect(run([{ op: 'delete', target: { byQuery: { shape: 'rect' } } }], s0).focusId).toBeUndefined()
+    expect(run([{ op: 'clear' }], s0).focusId).toBeUndefined()
+    expect(run([{ op: 'focus', target: { byQuery: { shape: 'circle' } } }], s0).focusId).toBe('circle#1')
+  })
+})
