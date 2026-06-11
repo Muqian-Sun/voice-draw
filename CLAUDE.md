@@ -55,6 +55,7 @@ README.md
 10. feat: lexicon 词表模块（颜色/形状/方位/量词，唯一来源，规格 §2）✅(GH PR#12)
 11. feat: 同音词纠错（词表 + 拼音编辑距离回退，规格 §3）✅(GH PR#13)
 12. feat: 规则快路径 T1~T11 模板解析（规格 §4）✅(GH PR#14)
+12b. feat: 解释器补全修改类操作 resize/rotate/rename/setText/zorder/focus/export（弹性追加）✅(GH PR#15)
 13. feat: backend LLM 转发 + parse 模式解析（System Prompt 构建期生成 + JSON 校验重试）
 14. feat: 焦点对象与指代消解（规格 §5.1）
 

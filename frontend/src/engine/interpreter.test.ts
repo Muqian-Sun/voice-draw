@@ -180,3 +180,112 @@ describe('事务语义（协议 §1.5）', () => {
     expect(r.error?.code).toBe('UNSUPPORTED_OP')
   })
 })
+
+describe('修改类操作补全（resize/rotate/rename/setText/zorder/focus/export）', () => {
+  it('resize scale：圆半径 80 × 1.3 = 104，焦点跟随', () => {
+    const s0 = run([{ op: 'create', shape: 'circle' }])
+    const s = run([{ op: 'resize', target: { byFocus: true }, scale: 1.3 }], s0)
+    expect(s.objects[0].radius).toBeCloseTo(104)
+    expect(s.focusId).toBe('circle#1')
+  })
+
+  it('resize scale 作用于矩形宽高与线 points', () => {
+    const s0 = run([
+      { op: 'create', shape: 'rect', at: { x: 512, y: 384 } },
+      { op: 'create', shape: 'line', at: { x: 200, y: 200 } },
+    ])
+    const s = run(
+      [
+        { op: 'resize', target: { byQuery: { shape: 'rect' } }, scale: 2 },
+        { op: 'resize', target: { byQuery: { shape: 'line' } }, scale: 0.5 },
+      ],
+      s0,
+    )
+    expect([s.objects[0].width, s.objects[0].height]).toEqual([320, 240])
+    expect(s.objects[1].points).toEqual([-60, 0, 60, 0]) // 3v=240 → 120
+  })
+
+  it('resize to：rect 显式宽高；相对尺寸 factor（和圆一样宽）', () => {
+    const s0 = run([
+      { op: 'create', shape: 'circle', name: '圆', size: 100, at: { x: 300, y: 300 } },
+      { op: 'create', shape: 'rect', at: { x: 600, y: 300 } },
+    ])
+    const s = run(
+      [{ op: 'resize', target: { byQuery: { shape: 'rect' } }, to: { width: { relativeTo: { byName: '圆' }, factor: 1 } } }],
+      s0,
+    )
+    expect(s.objects[1].width).toBe(200) // 圆 bbox 宽 = 2r = 200
+  })
+
+  it('resize 超出画布拉回（§5.5 clamp）', () => {
+    const s0 = run([{ op: 'create', shape: 'circle', size: 100, at: { x: 80, y: 80 } }])
+    const r = executeTransaction(s0, [{ op: 'resize', target: { byFocus: true }, scale: 2 }])
+    expect(r.error).toBeUndefined()
+    const o = r.state.objects[0]
+    expect(o.x - o.radius!).toBeGreaterThanOrEqual(0)
+    expect(o.y - o.radius!).toBeGreaterThanOrEqual(0)
+    expect(r.notices?.[0]).toContain('clamp')
+  })
+
+  it('rotate 累加并归一化到 [0,360)', () => {
+    const s0 = run([{ op: 'create', shape: 'triangle' }])
+    const s1 = run([{ op: 'rotate', target: { byFocus: true }, degrees: 45 }], s0)
+    expect(s1.objects[0].rotation).toBe(45)
+    const s2 = run([{ op: 'rotate', target: { byFocus: true }, degrees: -90 }], s1)
+    expect(s2.objects[0].rotation).toBe(315)
+  })
+
+  it('rename 设置 name，byName 随后可命中', () => {
+    const s0 = run([{ op: 'create', shape: 'rect' }])
+    const s = run(
+      [
+        { op: 'rename', target: { byFocus: true }, name: '屋顶' },
+        { op: 'style', target: { byName: '屋顶' }, fill: '#B22222' },
+      ],
+      s0,
+    )
+    expect(s.objects[0].name).toBe('屋顶')
+    expect(s.objects[0].fill).toBe('#B22222')
+  })
+
+  it('setText 仅对 text 形状有效', () => {
+    const s0 = run([{ op: 'create', shape: 'text', text: '你好' }])
+    const s = run([{ op: 'setText', target: { byFocus: true }, text: '再见' }], s0)
+    expect(s.objects[0].text).toBe('再见')
+    const s1 = run([{ op: 'create', shape: 'circle' }])
+    const r = executeTransaction(s1, [{ op: 'setText', target: { byFocus: true }, text: 'x' }])
+    expect(r.error?.code).toBe('INVALID_OP')
+  })
+
+  it('zorder front/back/forward', () => {
+    const s0 = run([
+      { op: 'create', shape: 'circle', name: 'a' },
+      { op: 'create', shape: 'circle', name: 'b', at: { x: 300, y: 300 } },
+      { op: 'create', shape: 'circle', name: 'c', at: { x: 600, y: 300 } },
+    ])
+    const zOf = (s: SceneState, n: string) => s.objects.find((o) => o.name === n)!.z
+    const s1 = run([{ op: 'zorder', target: { byName: 'a' }, to: 'front' }], s0)
+    expect(zOf(s1, 'a')).toBeGreaterThan(zOf(s1, 'c'))
+    const s2 = run([{ op: 'zorder', target: { byName: 'c' }, to: 'back' }], s0)
+    expect(zOf(s2, 'c')).toBeLessThan(zOf(s2, 'a'))
+    const s3 = run([{ op: 'zorder', target: { byName: 'a' }, to: 'forward' }], s0)
+    expect(zOf(s3, 'a')).toBe(zOf(s0, 'b'))
+    expect(zOf(s3, 'b')).toBe(zOf(s0, 'a'))
+  })
+
+  it('focus 仅切换焦点，不改对象', () => {
+    const s0 = run([
+      { op: 'create', shape: 'circle' },
+      { op: 'create', shape: 'rect', at: { x: 200, y: 200 } },
+    ])
+    const s = run([{ op: 'focus', target: { byQuery: { shape: 'circle' } } }], s0)
+    expect(s.focusId).toBe('circle#1')
+    expect(s.objects).toEqual(s0.objects)
+  })
+
+  it('export 不改状态（history 不产生快照）', () => {
+    const r = executeTransaction(run([{ op: 'create', shape: 'circle' }]), [{ op: 'export', format: 'png' }])
+    expect(r.executed).toBe(1)
+    expect(r.notices?.[0]).toContain('导出')
+  })
+})

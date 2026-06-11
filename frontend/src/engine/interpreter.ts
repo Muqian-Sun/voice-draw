@@ -1,11 +1,11 @@
 /**
  * DSL 解释器（规格 §5 执行语义）
  *
- * 已支持：create / style / move / delete / clear + 目标解析（§1.3）+ 焦点规则（§5.1）
+ * 已支持：create / style / move / resize / rotate / rename / setText / delete /
+ *         zorder / focus / export / clear + 目标解析（§1.3）+ 焦点规则（§5.1）
  *         + 自动布局/相对定位/越界 clamp（§5.2-5.5）+ 相对尺寸（§2.4）。
  * undo/redo 由上层 history.ts 快照栈处理（§5.4），不进入本解释器。
- * 暂不支持（按 PR 计划逐步消除，返回 UNSUPPORTED_OP）：
- * - resize/rotate/rename/setText/zorder/group/focus/export（随对应功能 PR 接入）
+ * 暂不支持（返回 UNSUPPORTED_OP）：group/ungroup（随 plan 模式自动编组 PR 接入）
  *
  * executeTransaction 是纯函数：不修改入参，返回新 SceneState——
  * 这是快照式 undo 的前提。事务内逐 Op 执行，失败时保留已成功的 Op（协议 §1.5）。
@@ -162,6 +162,16 @@ function buildGeometry(state: SceneState, op: CreateOp): GeometryResult {
     case 'text':
       return { ok: true, geo: { text: op.text, fontSize: op.fontSize ?? Math.max(16, 0.5 * v) } }
   }
+}
+
+/** 提取对象的几何字段子集（resize 缩放的作用域） */
+function pickGeometry(o: SceneObject): Partial<SceneObject> {
+  const out: Partial<SceneObject> = {}
+  for (const k of ['radius', 'innerRadius', 'radiusX', 'radiusY', 'width', 'height', 'fontSize'] as const) {
+    if (o[k] !== undefined) out[k] = o[k]
+  }
+  if (o.points) out.points = o.points
+  return out
 }
 
 /** 等比缩放几何字段（§5.5 对象大于画布时） */
@@ -327,6 +337,115 @@ function execOp(state: SceneState, op: Op): OpResult {
     case 'clear':
       // 普通事务语义、可被撤销（规格 §5.4）；id 计数不重置，保证 id 全程不复用
       return { ok: true, state: { ...state, objects: [], focusId: undefined } }
+
+    case 'resize': {
+      const t = resolveTarget(state, op.target)
+      if (!t.ok) return t
+      const o = t.obj
+      const b = bboxOf(o)
+      let patch: Partial<SceneObject>
+      if (op.scale !== undefined) {
+        patch = scaleGeometry(pickGeometry(o), op.scale)
+      } else {
+        const to = op.to!
+        const w = resolveSize(state, to.width, NaN, 'width')
+        if (!w.ok) return w
+        const h = resolveSize(state, to.height, NaN, 'height')
+        if (!h.ok) return h
+        if (o.shape === 'rect') {
+          patch = {}
+          if (!Number.isNaN(w.v)) patch.width = w.v
+          if (!Number.isNaN(h.v)) patch.height = h.v
+        } else if (o.shape === 'ellipse') {
+          patch = {}
+          if (!Number.isNaN(w.v)) patch.radiusX = w.v / 2
+          if (!Number.isNaN(h.v)) patch.radiusY = h.v / 2
+        } else {
+          // 等比形状：以给出的维度对当前 bbox 的比例统一缩放（两者都给时取宽）
+          const s = !Number.isNaN(w.v) ? w.v / b.w : h.v / b.h
+          if (!Number.isFinite(s) || s <= 0) {
+            return { ok: false, error: err('INVALID_OP', 'resize 目标尺寸无效') }
+          }
+          patch = scaleGeometry(pickGeometry(o), s)
+        }
+      }
+      // 中心不动；缩放后 bbox 超出画布则拉回（§5.5）
+      const nb = bboxOf({ ...o, ...patch })
+      const cur = getCenter(o)
+      const c = clampCenter(cur.x, cur.y, nb.w, nb.h)
+      if (c.clamped) {
+        patch.x = o.x + (c.x - cur.x)
+        patch.y = o.y + (c.y - cur.y)
+      }
+      return {
+        ok: true,
+        state: patchObject(state, o.id, patch),
+        ...(c.clamped ? { notice: `${o.id} 已拉回画布内（§5.5 clamp）` } : {}),
+      }
+    }
+
+    case 'rotate': {
+      const t = resolveTarget(state, op.target)
+      if (!t.ok) return t
+      const rotation = (((t.obj.rotation + op.degrees) % 360) + 360) % 360
+      return { ok: true, state: patchObject(state, t.obj.id, { rotation }) }
+    }
+
+    case 'rename': {
+      const t = resolveTarget(state, op.target)
+      if (!t.ok) return t
+      return { ok: true, state: patchObject(state, t.obj.id, { name: op.name }) }
+    }
+
+    case 'setText': {
+      const t = resolveTarget(state, op.target)
+      if (!t.ok) return t
+      if (t.obj.shape !== 'text') {
+        return { ok: false, error: err('INVALID_OP', `${t.obj.id} 不是文字对象，无法改文本`) }
+      }
+      return { ok: true, state: patchObject(state, t.obj.id, { text: op.text }) }
+    }
+
+    case 'zorder': {
+      const t = resolveTarget(state, op.target)
+      if (!t.ok) return t
+      const o = t.obj
+      const zs = state.objects.map((x) => x.z)
+      let z = o.z
+      if (op.to === 'front') z = Math.max(...zs) + 1
+      else if (op.to === 'back') z = Math.min(...zs) - 1
+      else {
+        // forward/backward：与相邻层级交换 z（已在最前/最后则不变）
+        const sorted = [...state.objects].sort((a, b) => a.z - b.z)
+        const i = sorted.findIndex((x) => x.id === o.id)
+        const j = op.to === 'forward' ? i + 1 : i - 1
+        if (j < 0 || j >= sorted.length) {
+          return { ok: true, state: patchObject(state, o.id, {}) }
+        }
+        const neighbor = sorted[j]
+        return {
+          ok: true,
+          state: {
+            ...state,
+            objects: state.objects.map((x) =>
+              x.id === o.id ? { ...x, z: neighbor.z } : x.id === neighbor.id ? { ...x, z: o.z } : x,
+            ),
+            focusId: o.id, // 焦点规则 §5.1：修改类操作 → 焦点 = 被操作对象
+          },
+        }
+      }
+      return { ok: true, state: patchObject(state, o.id, { z }) }
+    }
+
+    case 'focus': {
+      const t = resolveTarget(state, op.target)
+      if (!t.ok) return t
+      return { ok: true, state: { ...state, focusId: t.obj.id } }
+    }
+
+    case 'export':
+      // 引擎无状态变更（history 不入栈）；PNG 下载由前端在事务成功后触发
+      return { ok: true, state, notice: '导出 PNG' }
 
     default:
       return { ok: false, error: err('UNSUPPORTED_OP', `操作 ${op.op} 将在后续 PR 支持`) }

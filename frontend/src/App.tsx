@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import type Konva from 'konva'
 import { parseOps, type Op } from './dsl'
 import { createHistory, executeWithHistory, type HistoryOutcome, type HistoryState } from './engine/history'
 import { CanvasStage } from './components/CanvasStage'
@@ -15,6 +16,7 @@ export default function App() {
   const [history, setHistory] = useState<HistoryState>(createHistory)
   const historyRef = useRef(history)
   historyRef.current = history
+  const stageRef = useRef<Konva.Stage | null>(null)
 
   const [log, setLog] = useState<LogEntry[]>([])
   const pushLog = useCallback((level: LogEntry['level'], text: string) => {
@@ -36,6 +38,16 @@ export default function App() {
       historyRef.current = outcome.history
       setHistory(outcome.history)
       outcome.notices?.forEach((n) => pushLog('warn', `⚙ ${n}`))
+      // export 在引擎侧是无状态变更 Op，事务成功后由这里触发 PNG 下载
+      if (!outcome.error && parsed.ops.some((o) => o.op === 'export')) {
+        const stage = stageRef.current
+        if (stage) {
+          const a = document.createElement('a')
+          a.href = stage.toDataURL({ pixelRatio: 2 })
+          a.download = `voicedraw-${Date.now()}.png`
+          a.click()
+        }
+      }
       if (outcome.error) {
         pushLog(
           outcome.executed > 0 ? 'warn' : 'error',
@@ -147,7 +159,7 @@ export default function App() {
       <main className="workspace">
         <div className="canvas-wrap">
           <div className="stage-frame">
-            <CanvasStage scene={scene} />
+            <CanvasStage scene={scene} stageRef={stageRef} />
           </div>
           {voice.subtitle && (
             <div className={`subtitle subtitle-${voice.subtitle.kind}`}>{voice.subtitle.text}</div>
