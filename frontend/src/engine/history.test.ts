@@ -124,3 +124,41 @@ describe('clear 可撤销（规格 §5.4）', () => {
     expect(h.scene.objects[0].id).toBe('circle#2')
   })
 })
+
+describe('llm-plan 自动编组（§5.1，executeWithHistory autoGroupName）', () => {
+  it('事务新建对象 ≥2 → 编为一组；一次 undo 整体回退（含编组）', () => {
+    let h = createHistory()
+    const r = executeWithHistory(
+      h,
+      [
+        { op: 'create', shape: 'circle', name: '雪人身体', at: { x: 500, y: 500 }, size: 100 },
+        { op: 'create', shape: 'circle', name: '雪人头', at: { x: 500, y: 330 }, size: 60 },
+      ],
+      { autoGroupName: '雪人' },
+    )
+    expect(r.error).toBeUndefined()
+    expect(r.history.scene.objects.every((o) => o.groupId === '雪人')).toBe(true)
+    expect(r.history.scene.focusId).toBe('circle#2')
+    h = r.history
+    const undone = executeWithHistory(h, [{ op: 'undo' }])
+    expect(undone.history.scene.objects).toHaveLength(0)
+  })
+
+  it('只新建 1 个对象不编组；组名占用自动加序号', () => {
+    const one = executeWithHistory(createHistory(), [{ op: 'create', shape: 'circle' }], { autoGroupName: '雪人' })
+    expect(one.history.scene.objects[0].groupId).toBeUndefined()
+
+    let h = createHistory()
+    h = executeWithHistory(h, [
+      { op: 'create', shape: 'rect', at: { x: 100, y: 100 } },
+      { op: 'create', shape: 'rect', at: { x: 300, y: 100 } },
+    ], { autoGroupName: '雪人' }).history
+    const again = executeWithHistory(h, [
+      { op: 'create', shape: 'circle', at: { x: 600, y: 300 } },
+      { op: 'create', shape: 'circle', at: { x: 800, y: 300 } },
+    ], { autoGroupName: '雪人' })
+    const groups = new Set(again.history.scene.objects.map((o) => o.groupId))
+    expect(groups.has('雪人')).toBe(true)
+    expect(groups.has('雪人2')).toBe(true)
+  })
+})

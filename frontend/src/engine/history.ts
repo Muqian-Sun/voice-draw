@@ -37,7 +37,16 @@ export interface HistoryOutcome extends ExecOutcome {
 
 const err = (code: EngineError['code'], message: string): EngineError => ({ code, message })
 
-export function executeWithHistory(h: HistoryState, ops: Op[]): HistoryOutcome {
+export interface ExecuteOptions {
+  /**
+   * llm-plan 来源事务的自动编组（§5.1）：事务成功后把本事务全部新建对象编为一组，
+   * 组名 = 用户话术主名词（路由器提取），焦点保持最后一个 create 的成员。
+   * 编组与绘制同属一个快照（一次 undo 整体回退）。
+   */
+  autoGroupName?: string
+}
+
+export function executeWithHistory(h: HistoryState, ops: Op[], opts: ExecuteOptions = {}): HistoryOutcome {
   const hasHistoryOp = ops.some((op) => op.op === 'undo' || op.op === 'redo')
 
   if (hasHistoryOp) {
@@ -88,7 +97,26 @@ export function executeWithHistory(h: HistoryState, ops: Op[]): HistoryOutcome {
     // 无任何生效 Op / 状态未变（如纯 export 事务）：不产生快照，redo 栈保留
     return { history: h, ...r }
   }
+
+  let scene = r.state
+  if (opts.autoGroupName !== undefined && r.error === undefined) {
+    // 本事务新建对象 = createdSeq 大于事务前的全局计数
+    const created = scene.objects.filter((o) => o.createdSeq > h.scene.seq)
+    if (created.length >= 2) {
+      const taken = new Set<string>(
+        scene.objects.flatMap((o) => [o.groupId, o.name]).filter((x): x is string => x !== undefined),
+      )
+      let name = opts.autoGroupName
+      for (let i = 2; taken.has(name); i++) name = `${opts.autoGroupName}${i}`
+      const ids = new Set(created.map((o) => o.id))
+      scene = {
+        ...scene,
+        objects: scene.objects.map((o) => (ids.has(o.id) ? { ...o, groupId: name } : o)),
+      }
+    }
+  }
+
   const undoStack = [...h.undoStack, h.scene]
   if (undoStack.length > MAX_UNDO_DEPTH) undoStack.shift()
-  return { history: { scene: r.state, undoStack, redoStack: [] }, ...r }
+  return { history: { scene, undoStack, redoStack: [] }, ...r, state: scene }
 }

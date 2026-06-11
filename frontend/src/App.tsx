@@ -7,7 +7,7 @@ import { DebugPanel, type LogEntry } from './components/DebugPanel'
 import { buildAmbiguityClarify, matchExpecting, type ExpectingItem } from './nlu/clarify'
 import { correctTranscript } from './nlu/correction'
 import { parseWithLlm } from './nlu/llm'
-import { decideMode, parseRule } from './nlu/rules'
+import { decideMode, extractPlanSubject, parseRule } from './nlu/rules'
 import { CONFIRM_YES_WORDS } from './shared/lexicon'
 import { CONFIRM_WINDOW_MS, STATE_LABELS, type VoiceEvent, type VoiceState } from './voice/fsm'
 import { GatewayTts, TtsOrchestrator, WebSpeechTts } from './voice/tts'
@@ -29,15 +29,15 @@ export default function App() {
     fn(`[voiceDraw] ${text}`)
   }, [])
 
-  /** 执行一个已校验前的 Op 数组（面板按钮 / 控制台 / 后续理解层共用入口） */
+  /** 执行一个已校验前的 Op 数组（面板按钮 / 控制台 / 理解层共用入口）；autoGroupName 见 §5.1 llm-plan 行 */
   const execOps = useCallback(
-    (ops: unknown): HistoryOutcome | { error: string } => {
+    (ops: unknown, autoGroupName?: string): HistoryOutcome | { error: string } => {
       const parsed = parseOps(Array.isArray(ops) ? ops : [ops])
       if (!parsed.ok) {
         pushLog('error', `DSL 校验失败：${parsed.error}`)
         return { error: parsed.error }
       }
-      const outcome = executeWithHistory(historyRef.current, parsed.ops)
+      const outcome = executeWithHistory(historyRef.current, parsed.ops, { autoGroupName })
       historyRef.current = outcome.history
       setHistory(outcome.history)
       outcome.notices?.forEach((n) => pushLog('warn', `⚙ ${n}`))
@@ -244,7 +244,12 @@ export default function App() {
 
       const scene = historyRef.current.scene
       const r = parseRule(utterance, {
-        names: scene.objects.map((o) => o.name).filter((n): n is string => n !== undefined && n.length > 0),
+        // 对象名 + 组名都参与 byName 热匹配（"把雪人移到右边"）
+        names: [
+          ...new Set(
+            scene.objects.flatMap((o) => [o.name, o.groupId]).filter((n): n is string => n !== undefined && n.length > 0),
+          ),
+        ],
         hasFocus: scene.focusId !== undefined,
       })
       if (r === null) {
@@ -284,7 +289,17 @@ export default function App() {
             return
           }
           advance(true)
-          if (speakOutcome(execOps(res.ops), res.say, res.ops)) recordSuccess(utterance, res.ops)
+          // llm-plan：本事务新建对象自动编组（组名=话术主名词，§5.1），随后 desc 逐条进度播报
+          const groupName = res.source === 'llm-plan' ? (extractPlanSubject(utterance) ?? undefined) : undefined
+          const outcome = execOps(res.ops, groupName)
+          const ok = !('error' in outcome && outcome.error)
+          if (res.source === 'llm-plan' && ok) {
+            if (groupName !== undefined) pushLog('info', `已自动编组「${groupName}」（整组移动/缩放/删除生效）`)
+            for (const o of res.ops) {
+              if (o.op === 'create' && o.desc !== undefined) say(o.desc)
+            }
+          }
+          if (speakOutcome(outcome, res.say, res.ops)) recordSuccess(utterance, res.ops)
         })()
         return
       }

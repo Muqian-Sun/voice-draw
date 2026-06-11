@@ -2,7 +2,7 @@
  * 规则快路径单测（规格 §4）。用例以 §4.2 模板表的示例句为基线。
  */
 import { describe, expect, it } from 'vitest'
-import { decideMode, parseRule } from './rules'
+import { decideMode, extractPlanSubject, parseRule } from './rules'
 
 const FOCUSED = { hasFocus: true }
 
@@ -241,5 +241,13 @@ describe('指代限定词（§5.1 指代消解）', () => {
     expect(parseRule('把刚才那个删掉', { hasFocus: true })?.ops).toEqual([
       { op: 'delete', target: { byFocus: true } },
     ])
+  })
+})
+
+describe('extractPlanSubject（llm-plan 自动编组组名，§5.1）', () => {
+  it('取最长未知词段作主名词', () => {
+    expect(extractPlanSubject('画一个雪人')).toBe('雪人')
+    expect(extractPlanSubject('帮我画一间带烟囱的房子')).toBe('烟囱')
+    expect(extractPlanSubject('画个圆')).toBeNull() // 全部是词表词
   })
 })

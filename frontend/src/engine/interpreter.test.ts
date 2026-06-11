@@ -325,3 +325,88 @@ describe('焦点更新规则逐条（§5.1 表格）', () => {
     expect(run([{ op: 'focus', target: { byQuery: { shape: 'circle' } } }], s0).focusId).toBe('circle#1')
   })
 })
+
+describe('group 引用语义（§5.6）', () => {
+  const grouped = () =>
+    run([
+      { op: 'create', shape: 'circle', name: '身体', at: { x: 500, y: 500 }, size: 100 },
+      { op: 'create', shape: 'circle', name: '头', at: { x: 500, y: 330 }, size: 60 },
+      { op: 'create', shape: 'rect', name: '别的', at: { x: 100, y: 100 }, size: 30 },
+      { op: 'group', targets: [{ byName: '身体' }, { byName: '头' }], name: '雪人' },
+    ])
+
+  it('group 赋 groupId，焦点=最后成员；成员不足 2 报 INVALID_OP', () => {
+    const s = grouped()
+    expect(s.objects.filter((o) => o.groupId === '雪人')).toHaveLength(2)
+    expect(s.objects.find((o) => o.name === '别的')!.groupId).toBeUndefined()
+    expect(s.focusId).toBe('circle#2')
+    const r = executeTransaction(s, [{ op: 'group', targets: [{ byName: '别的' }, { byName: '别的' }] }])
+    expect(r.error?.code).toBe('INVALID_OP')
+  })
+
+  it('几何类提升整组：move 成员一起平移，相对位置不变', () => {
+    const s0 = grouped()
+    const s = run([{ op: 'move', target: { byName: '头' }, delta: [100, 0] }], s0)
+    const body = s.objects.find((o) => o.name === '身体')!
+    const head = s.objects.find((o) => o.name === '头')!
+    expect(body.x).toBe(600)
+    expect(head.x).toBe(600)
+    expect(head.y - body.y).toBe(-170) // 相对位置保持
+  })
+
+  it('byName 可指组名（"把雪人移到右边"整组移动）', () => {
+    const s0 = grouped()
+    const s = run([{ op: 'move', target: { byName: '雪人' }, delta: [50, 0] }], s0)
+    expect(s.objects.find((o) => o.name === '身体')!.x).toBe(550)
+    expect(s.objects.find((o) => o.name === '头')!.x).toBe(550)
+  })
+
+  it('resize 整组：几何缩放 + 成员中心绕组中心收放', () => {
+    const s0 = grouped()
+    const s = run([{ op: 'resize', target: { byName: '头' }, scale: 0.5 }], s0)
+    const body = s.objects.find((o) => o.name === '身体')!
+    const head = s.objects.find((o) => o.name === '头')!
+    expect(body.radius).toBe(50)
+    expect(head.radius).toBe(30)
+    // 组中心 y=(500-100+330-60... union: body[400,600] head[270,390] → y∈[270,600] 中心 435
+    expect(body.y).toBeCloseTo(435 + (500 - 435) * 0.5)
+    expect(head.y).toBeCloseTo(435 + (330 - 435) * 0.5)
+  })
+
+  it('外观类作用于成员本身："把头涂红"不影响身体', () => {
+    const s0 = grouped()
+    const s = run([{ op: 'style', target: { byName: '头' }, fill: '#FF4136' }], s0)
+    expect(s.objects.find((o) => o.name === '头')!.fill).toBe('#FF4136')
+    expect(s.objects.find((o) => o.name === '身体')!.fill).not.toBe('#FF4136')
+  })
+
+  it('byQuery 组内外都命中时优先组外独立对象', () => {
+    const s0 = run([
+      { op: 'create', shape: 'circle', name: 'a', at: { x: 300, y: 300 } },
+      { op: 'create', shape: 'circle', name: 'b', at: { x: 600, y: 300 } },
+      { op: 'create', shape: 'circle', name: 'c', at: { x: 800, y: 300 } },
+      { op: 'group', targets: [{ byName: 'a' }, { byName: 'b' }] },
+    ])
+    // 组外只有 c → byQuery circle 唯一命中 c，不报歧义
+    const s = run([{ op: 'style', target: { byQuery: { shape: 'circle' } }, fill: '#FFDC00' }], s0)
+    expect(s.objects.find((o) => o.name === 'c')!.fill).toBe('#FFDC00')
+    expect(s.objects.find((o) => o.name === 'a')!.fill).not.toBe('#FFDC00')
+  })
+
+  it('delete 整组；ungroup 解组保留 id/name', () => {
+    const s0 = grouped()
+    const deleted = run([{ op: 'delete', target: { byName: '头' } }], s0)
+    expect(deleted.objects.map((o) => o.name)).toEqual(['别的'])
+    const ungrouped = run([{ op: 'ungroup', target: { byName: '雪人' } }], s0)
+    expect(ungrouped.objects.every((o) => o.groupId === undefined)).toBe(true)
+    expect(ungrouped.objects.map((o) => o.name).sort()).toEqual(['别的', '头', '身体'])
+  })
+
+  it('zorder front 整组保持组内顺序压到最上层', () => {
+    const s0 = grouped()
+    const s = run([{ op: 'zorder', target: { byName: '身体' }, to: 'front' }], s0)
+    const zOf = (n: string) => s.objects.find((o) => o.name === n)!.z
+    expect(zOf('身体')).toBeGreaterThan(zOf('别的'))
+    expect(zOf('头')).toBeGreaterThan(zOf('身体')) // 组内相对顺序保持
+  })
+})

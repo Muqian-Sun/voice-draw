@@ -71,19 +71,32 @@ export function CanvasStage({ scene, stageRef }: { scene: SceneState; stageRef?:
           <ShapeNode key={o.id} o={o} />
         ))}
       </Layer>
-      {/* 焦点高亮（指代"它"的可视反馈，§5.1）。独立 overlay 层，PNG 导出时临时隐藏 */}
+      {/* 焦点高亮（指代"它"的可视反馈，§5.1）。焦点在组内时覆盖整组（§5.6 几何类组提升）。
+          独立 overlay 层，PNG 导出时临时隐藏 */}
       <Layer name="overlay" listening={false}>
         {(() => {
           const focus = scene.objects.find((o) => o.id === scene.focusId)
           if (!focus) return null
-          const [bx, by, bw, bh] = getBBox(focus)
+          const targets =
+            focus.groupId !== undefined ? scene.objects.filter((o) => o.groupId === focus.groupId) : [focus]
+          let minX = Infinity
+          let minY = Infinity
+          let maxX = -Infinity
+          let maxY = -Infinity
+          for (const o of targets) {
+            const [bx, by, bw, bh] = getBBox(o)
+            minX = Math.min(minX, bx)
+            minY = Math.min(minY, by)
+            maxX = Math.max(maxX, bx + bw)
+            maxY = Math.max(maxY, by + bh)
+          }
           const pad = 6
           return (
             <Rect
-              x={bx - pad}
-              y={by - pad}
-              width={bw + pad * 2}
-              height={bh + pad * 2}
+              x={minX - pad}
+              y={minY - pad}
+              width={maxX - minX + pad * 2}
+              height={maxY - minY + pad * 2}
               stroke="#2563EB"
               strokeWidth={1.5}
               dash={[6, 4]}
