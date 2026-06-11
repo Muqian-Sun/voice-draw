@@ -104,6 +104,8 @@ export async function handleLlmParse(req: Request, res: Response): Promise<void>
         model,
         stream: true,
         temperature: 0,
+        // 关闭思考模式（方舟扩展参数）：结构化解析不需要推理链，省下的是首 token 与总时长
+        thinking: { type: 'disabled' },
         // 不传 response_format：Coding 端点的 deepseek-v4-flash 不支持 json_object（实测 400）；
         // JSON-only 由 System Prompt 约束 + 前端校验重试兜底
         messages: buildMessages(body),
