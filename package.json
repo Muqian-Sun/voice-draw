@@ -1,0 +1,21 @@
+{
+  "name": "voice-draw",
+  "private": true,
+  "description": "纯语音控制的 AI 绘图工具（七牛云1024创作节·题目二）",
+  "scripts": {
+    "dev": "concurrently -n web,api -c blue,green \"pnpm --filter frontend dev\" \"pnpm --filter backend dev\"",
+    "build": "pnpm -r build"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@10.14.0",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}
