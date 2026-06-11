@@ -1,8 +1,5 @@
 import { Stage, Layer, Rect, Text } from 'react-konva'
-
-/** 逻辑画布尺寸，见 docs/题目二-交互协议规范.md §1.2 */
-export const CANVAS_WIDTH = 1024
-export const CANVAS_HEIGHT = 768
+import { CANVAS_WIDTH, CANVAS_HEIGHT } from './dsl'
 
 export default function App() {
   return (

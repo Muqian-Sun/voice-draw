@@ -51,6 +51,8 @@ pnpm dev
 |----|------|
 | react / react-dom | 前端 UI 框架 |
 | konva / react-konva | Canvas 2D 场景图渲染（绘图执行引擎底座） |
+| zod | 绘图 DSL / LLM 输出的运行时 Schema 校验 |
+| vitest | 前端单元测试（DSL Schema、Golden 回归） |
 | vite / @vitejs/plugin-react | 前端构建与开发服务器 |
 | typescript | 类型系统（前后端） |
 | express | backend HTTP 服务（密钥隔离代理） |
