@@ -2,10 +2,11 @@
  * DSL 解释器（规格 §5 执行语义）
  *
  * 已支持：create / style / move / resize / rotate / rename / setText / delete /
- *         zorder / focus / export / clear + 目标解析（§1.3）+ 焦点规则（§5.1）
+ *         zorder / focus / export / clear / group / ungroup + 目标解析（§1.3）+ 焦点规则（§5.1）
  *         + 自动布局/相对定位/越界 clamp（§5.2-5.5）+ 相对尺寸（§2.4）。
+ *         v1.5 表达力扩展：mirror（镜像复制）/ align（对齐）/ distribute（等距分布）/
+ *         between 位置 / 连接线 from-to / zorder 相对层级 above-below。
  * undo/redo 由上层 history.ts 快照栈处理（§5.4），不进入本解释器。
- * 暂不支持（返回 UNSUPPORTED_OP）：group/ungroup（随 plan 模式自动编组 PR 接入）
  *
  * executeTransaction 是纯函数：不修改入参，返回新 SceneState——
  * 这是快照式 undo 的前提。事务内逐 Op 执行，失败时保留已成功的 Op（协议 §1.5）。
@@ -249,6 +250,11 @@ const ANCHOR_DIR: Record<string, [number, number]> = {
  */
 function edgeAnchorPoint(obj: SceneObject, anchor: Anchor, gap: number): Point {
   const [ux, uy] = ANCHOR_DIR[anchor]
+  return edgePointInDir(obj, ux, uy, gap)
+}
+
+/** 任意单位方向上的真实形状边缘点（v1.5 连接线端点用） */
+function edgePointInDir(obj: SceneObject, ux: number, uy: number, gap: number): Point {
   const c = getCenter(obj)
   let t: number
   if (obj.shape === 'circle') {
@@ -310,6 +316,19 @@ function resolvePosition(
     return { ok: true, point: autoPlace(state.objects.map(bboxOf), focus && bboxOf(focus), w, h) }
   }
   if ('x' in at) return { ok: true, point: { x: at.x, y: at.y } }
+  if ('between' in at) {
+    // v1.5：两参照中心插值（"在头和身体之间"）
+    const a = resolveTarget(state, at.between[0])
+    if (!a.ok) return a
+    const b = resolveTarget(state, at.between[1])
+    if (!b.ok) return b
+    const ca = getCenter(a.obj)
+    const cb = getCenter(b.obj)
+    const t = at.t ?? 0.5
+    let p: Point = { x: ca.x + (cb.x - ca.x) * t, y: ca.y + (cb.y - ca.y) * t }
+    if (at.offset) p = { x: p.x + at.offset[0], y: p.y + at.offset[1] }
+    return { ok: true, point: p }
+  }
   // §5.3 相对定位
   let p: Point
   if (at.ref === 'canvas') {
@@ -351,6 +370,32 @@ type OpResult = { ok: true; state: SceneState; notice?: string } | { ok: false; 
 const LINE_SHAPES = new Set(['line', 'polyline'])
 
 function execCreate(state: SceneState, op: CreateOp): OpResult {
+  // v1.5 连接线：端点 = 双方真实形状边缘上朝向彼此的点，转译成 at + points 走常规路径
+  let opEff = op
+  if (op.from !== undefined && op.to !== undefined) {
+    const a = resolveTarget(state, op.from)
+    if (!a.ok) return a
+    const b = resolveTarget(state, op.to)
+    if (!b.ok) return b
+    const ca = getCenter(a.obj)
+    const cb = getCenter(b.obj)
+    const len = Math.hypot(cb.x - ca.x, cb.y - ca.y) || 1
+    const ux = (cb.x - ca.x) / len
+    const uy = (cb.y - ca.y) / len
+    const p1 = edgePointInDir(a.obj, ux, uy, 0)
+    const p2 = edgePointInDir(b.obj, -ux, -uy, 0)
+    const { from: _f, to: _t, ...rest } = op
+    // 绝对 at 是 bbox 中心语义：给两端点中点，points 锚回 p1（首端点恰落 p1、尾端点落 p2）
+    opEff = {
+      ...rest,
+      at: { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 },
+      points: [[0, 0], [p2.x - p1.x, p2.y - p1.y]],
+    }
+  }
+  return execCreateResolved(state, opEff)
+}
+
+function execCreateResolved(state: SceneState, op: CreateOp): OpResult {
   const geo = buildGeometry(state, op)
   if (!geo.ok) return geo
 
@@ -619,6 +664,16 @@ function execOp(state: SceneState, op: Op): OpResult {
       const t = resolveTarget(state, op.target)
       if (!t.ok) return t
       const o = t.obj
+      if (typeof op.to === 'object') {
+        // v1.5 相对层级："放到 X 后面/前面"——落在参照 z 的紧邻位置（分数 z，渲染按 sort）
+        const refSel = 'above' in op.to ? op.to.above : op.to.below
+        const ref = resolveTarget(state, refSel)
+        if (!ref.ok) return ref
+        const delta = 'above' in op.to ? 0.5 : -0.5
+        const scope = geometryScope(state, op.target, o)
+        const patches = new Map(scope.map((m, i) => [m.id, { z: ref.obj.z + delta + (i + 1) * 0.01 * Math.sign(delta) }]))
+        return { ok: true, state: patchMany(state, patches, o.id) }
+      }
       const members = geometryScope(state, op.target, o)
       if (members.length > 1) {
         // 组提升（§5.6 v1.1）：整组作为图层块整体移动，保持组内相对顺序
@@ -669,6 +724,85 @@ function execOp(state: SceneState, op: Op): OpResult {
         }
       }
       return { ok: true, state: patchObject(state, o.id, { z }) }
+    }
+
+    case 'mirror': {
+      // v1.5 镜像复制：关于 about 参照的中心轴翻转位置与几何（对称部件由引擎精确生成）
+      const t = resolveTarget(state, op.target)
+      if (!t.ok) return t
+      const ax = resolveTarget(state, op.about)
+      if (!ax.ok) return ax
+      const o = t.obj
+      const c = getCenter(ax.obj)
+      const vertical = (op.axis ?? 'vertical') === 'vertical' // vertical=左右镜像
+      const shapeSeq = (state.seqByShape[o.shape] ?? 0) + 1
+      const id = `${o.shape}#${shapeSeq}`
+      const maxZ = state.objects.reduce((m, x) => Math.max(m, x.z), 0)
+      const mirrored: SceneObject = {
+        ...o,
+        id,
+        ...(op.name !== undefined ? { name: op.name } : o.name !== undefined ? { name: `${o.name}-镜像` } : {}),
+        x: vertical ? 2 * c.x - o.x : o.x,
+        y: vertical ? o.y : 2 * c.y - o.y,
+        rotation: ((-o.rotation % 360) + 360) % 360,
+        ...(o.points !== undefined
+          ? { points: o.points.map((v, i) => (vertical ? (i % 2 === 0 ? -v : v) : i % 2 === 0 ? v : -v)) }
+          : {}),
+        z: maxZ + 1,
+        createdSeq: state.seq + 1,
+      }
+      delete (mirrored as { groupId?: string }).groupId // 新对象不继承组，编组由调用方/autoGroup 决定
+      return {
+        ok: true,
+        state: {
+          ...state,
+          objects: [...state.objects, mirrored],
+          focusId: id,
+          seq: state.seq + 1,
+          seqByShape: { ...state.seqByShape, [o.shape]: shapeSeq },
+        },
+      }
+    }
+
+    case 'align': {
+      // v1.5 中心对齐：全部对象在 axis 上的中心对齐到首个目标
+      const objs: SceneObject[] = []
+      for (const sel of op.targets) {
+        const t = resolveTarget(state, sel)
+        if (!t.ok) return t
+        objs.push(t.obj)
+      }
+      const refC = getCenter(objs[0])
+      const patches = new Map(
+        objs.slice(1).map((o) => {
+          const c = getCenter(o)
+          return [o.id, op.axis === 'x' ? { x: o.x + (refC.x - c.x) } : { y: o.y + (refC.y - c.y) }] as const
+        }),
+      )
+      return { ok: true, state: patchMany(state, new Map(patches), objs[0].id) }
+    }
+
+    case 'distribute': {
+      // v1.5 等距分布：按 axis 排序后首尾不动，中间对象中心平均分布
+      const objs: SceneObject[] = []
+      for (const sel of op.targets) {
+        const t = resolveTarget(state, sel)
+        if (!t.ok) return t
+        objs.push(t.obj)
+      }
+      const key = (o: SceneObject) => (op.axis === 'x' ? getCenter(o).x : getCenter(o).y)
+      const sorted = [...objs].sort((a, b) => key(a) - key(b))
+      const lo = key(sorted[0])
+      const hi = key(sorted[sorted.length - 1])
+      const step = (hi - lo) / (sorted.length - 1)
+      const patches = new Map(
+        sorted.map((o, i) => {
+          const want = lo + step * i
+          const cur = key(o)
+          return [o.id, op.axis === 'x' ? { x: o.x + (want - cur) } : { y: o.y + (want - cur) }] as const
+        }),
+      )
+      return { ok: true, state: patchMany(state, new Map(patches), sorted[sorted.length - 1].id) }
     }
 
     case 'focus': {
