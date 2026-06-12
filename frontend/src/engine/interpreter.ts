@@ -117,10 +117,22 @@ const bboxOf = (o: SceneObject): BBox => {
 
 // ---------- group 引用语义（§5.6） ----------
 
-/** 几何类 Op（move/resize/rotate/delete/zorder）目标命中组内成员时提升为整组 */
+/** 组的全部成员（group 并入、focus 高亮等场景用） */
 function membersOf(state: SceneState, obj: SceneObject): SceneObject[] {
   if (obj.groupId === undefined) return [obj]
   return state.objects.filter((o) => o.groupId === obj.groupId)
+}
+
+/**
+ * 几何类 Op 的作用范围（§5.6 v1.1 修订）：
+ * 仅当意图明确指组——组名引用（byName=组名）或焦点指代（byFocus，"把它移走"）——才提升整组；
+ * 显式命中成员（成员名/byId/byQuery）作用成员本身，否则"把头变大"会放大整只猫，
+ * 多轮部件修正无法进行（实测修复成功率 2/5 的根因）。
+ */
+function geometryScope(state: SceneState, sel: TargetSelector, obj: SceneObject): SceneObject[] {
+  if (obj.groupId === undefined) return [obj]
+  const wantsGroup = 'byFocus' in sel || ('byName' in sel && sel.byName === obj.groupId)
+  return wantsGroup ? membersOf(state, obj) : [obj]
 }
 
 function unionBBox(objs: SceneObject[]): BBox {
@@ -381,7 +393,7 @@ function execOp(state: SceneState, op: Op): OpResult {
     case 'move': {
       const t = resolveTarget(state, op.target)
       if (!t.ok) return t
-      const members = membersOf(state, t.obj) // 组提升（§5.6）：整组一起移
+      const members = geometryScope(state, op.target, t.obj) // §5.6 v1.1：组名/byFocus 才整组
       const b = members.length === 1 ? bboxOf(t.obj) : unionBBox(members)
       const cur = { x: b.x + b.w / 2, y: b.y + b.h / 2 }
       let desired: Point
@@ -415,7 +427,7 @@ function execOp(state: SceneState, op: Op): OpResult {
     case 'delete': {
       const t = resolveTarget(state, op.target)
       if (!t.ok) return t
-      const ids = new Set(membersOf(state, t.obj).map((m) => m.id)) // 组提升：整组删除
+      const ids = new Set(geometryScope(state, op.target, t.obj).map((m) => m.id)) // §5.6 v1.1
       return {
         ok: true,
         state: {
@@ -434,9 +446,9 @@ function execOp(state: SceneState, op: Op): OpResult {
       const t = resolveTarget(state, op.target)
       if (!t.ok) return t
       const o = t.obj
-      const members = membersOf(state, o)
+      const members = geometryScope(state, op.target, o)
       if (members.length > 1) {
-        // 组提升（§5.6）：等比缩放——成员几何缩放 + 成员中心绕组中心收放
+        // 组提升（§5.6 v1.1）：等比缩放——成员几何缩放 + 成员中心绕组中心收放
         const gb = unionBBox(members)
         const gc = { x: gb.x + gb.w / 2, y: gb.y + gb.h / 2 }
         let s: number
@@ -514,7 +526,7 @@ function execOp(state: SceneState, op: Op): OpResult {
     case 'rotate': {
       const t = resolveTarget(state, op.target)
       if (!t.ok) return t
-      const members = membersOf(state, t.obj)
+      const members = geometryScope(state, op.target, t.obj)
       const norm = (r: number) => ((r % 360) + 360) % 360
       if (members.length > 1) {
         // 组提升：成员中心绕组中心旋转 + 各自自转
@@ -557,9 +569,9 @@ function execOp(state: SceneState, op: Op): OpResult {
       const t = resolveTarget(state, op.target)
       if (!t.ok) return t
       const o = t.obj
-      const members = membersOf(state, o)
+      const members = geometryScope(state, op.target, o)
       if (members.length > 1) {
-        // 组提升：整组作为图层块整体移动，保持组内相对顺序
+        // 组提升（§5.6 v1.1）：整组作为图层块整体移动，保持组内相对顺序
         const sortedMembers = [...members].sort((a, b) => a.z - b.z)
         const outside = state.objects.filter((x) => x.groupId !== o.groupId).map((x) => x.z)
         const blockMin = sortedMembers[0].z
