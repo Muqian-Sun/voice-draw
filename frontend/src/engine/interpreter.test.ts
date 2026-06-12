@@ -344,14 +344,20 @@ describe('group 引用语义（§5.6）', () => {
     expect(r.error?.code).toBe('INVALID_OP')
   })
 
-  it('几何类提升整组：move 成员一起平移，相对位置不变', () => {
+  it('成员名命中 → 仅作用成员（§5.6 v1.1："把头往右移"只移头）', () => {
     const s0 = grouped()
     const s = run([{ op: 'move', target: { byName: '头' }, delta: [100, 0] }], s0)
     const body = s.objects.find((o) => o.name === '身体')!
     const head = s.objects.find((o) => o.name === '头')!
-    expect(body.x).toBe(600)
+    expect(body.x).toBe(500) // 身体不动
     expect(head.x).toBe(600)
-    expect(head.y - body.y).toBe(-170) // 相对位置保持
+  })
+
+  it('byFocus 指代 → 整组（"把它移走"，Golden #30 语义）', () => {
+    const s0 = grouped() // group 后焦点=最后成员 circle#2（头）
+    const s = run([{ op: 'move', target: { byFocus: true }, delta: [100, 0] }], s0)
+    expect(s.objects.find((o) => o.name === '身体')!.x).toBe(600)
+    expect(s.objects.find((o) => o.name === '头')!.x).toBe(600)
   })
 
   it('byName 可指组名（"把雪人移到右边"整组移动）', () => {
@@ -361,9 +367,9 @@ describe('group 引用语义（§5.6）', () => {
     expect(s.objects.find((o) => o.name === '头')!.x).toBe(550)
   })
 
-  it('resize 整组：几何缩放 + 成员中心绕组中心收放', () => {
+  it('resize 整组（组名引用）：几何缩放 + 成员中心绕组中心收放', () => {
     const s0 = grouped()
-    const s = run([{ op: 'resize', target: { byName: '头' }, scale: 0.5 }], s0)
+    const s = run([{ op: 'resize', target: { byName: '雪人' }, scale: 0.5 }], s0)
     const body = s.objects.find((o) => o.name === '身体')!
     const head = s.objects.find((o) => o.name === '头')!
     expect(body.radius).toBe(50)
@@ -393,18 +399,20 @@ describe('group 引用语义（§5.6）', () => {
     expect(s.objects.find((o) => o.name === 'a')!.fill).not.toBe('#FFDC00')
   })
 
-  it('delete 整组；ungroup 解组保留 id/name', () => {
+  it('delete 整组（组名）；成员名只删成员；ungroup 解组保留 id/name', () => {
     const s0 = grouped()
-    const deleted = run([{ op: 'delete', target: { byName: '头' } }], s0)
+    const deleted = run([{ op: 'delete', target: { byName: '雪人' } }], s0)
     expect(deleted.objects.map((o) => o.name)).toEqual(['别的'])
+    const delMember = run([{ op: 'delete', target: { byName: '头' } }], s0)
+    expect(delMember.objects.map((o) => o.name).sort()).toEqual(['别的', '身体'])
     const ungrouped = run([{ op: 'ungroup', target: { byName: '雪人' } }], s0)
     expect(ungrouped.objects.every((o) => o.groupId === undefined)).toBe(true)
     expect(ungrouped.objects.map((o) => o.name).sort()).toEqual(['别的', '头', '身体'])
   })
 
-  it('zorder front 整组保持组内顺序压到最上层', () => {
+  it('zorder front 整组（组名）保持组内顺序压到最上层', () => {
     const s0 = grouped()
-    const s = run([{ op: 'zorder', target: { byName: '身体' }, to: 'front' }], s0)
+    const s = run([{ op: 'zorder', target: { byName: '雪人' }, to: 'front' }], s0)
     const zOf = (n: string) => s.objects.find((o) => o.name === n)!.z
     expect(zOf('身体')).toBeGreaterThan(zOf('别的'))
     expect(zOf('头')).toBeGreaterThan(zOf('身体')) // 组内相对顺序保持
