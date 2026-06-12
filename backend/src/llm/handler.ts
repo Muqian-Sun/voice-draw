@@ -36,6 +36,8 @@ const requestSchema = z
     retry: z.object({ previous: z.string(), error: z.string() }).strict().optional(),
     /** 画布截图 dataURL（视觉自检按需附带，协议 §2.2 v1.2）；带图时走多模态模型 */
     image: z.string().startsWith('data:image/').max(2_000_000).optional(),
+    /** v1.4 流式交付：true 时把上游 content 增量透传（chunked text），前端边收边渐进绘制 */
+    stream: z.boolean().optional(),
   })
   .strict()
 
@@ -142,6 +144,12 @@ export async function handleLlmParse(req: Request, res: Response): Promise<void>
     let buffer = ''
     const reader = upstream.body.getReader()
     const decoder = new TextDecoder()
+    if (body.stream) {
+      // v1.4 流式交付：增量透传（前端拿到的就是 LLM 正在写的 JSON 文本）
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8')
+      res.setHeader('Cache-Control', 'no-store')
+      res.setHeader('X-Accel-Buffering', 'no')
+    }
     for (;;) {
       const { done, value } = await reader.read()
       if (done) break
@@ -157,10 +165,19 @@ export async function handleLlmParse(req: Request, res: Response): Promise<void>
           timer = setTimeout(() => abort.abort(), TOTAL_TIMEOUT_MS[body.mode])
         }
         content += delta
+        if (body.stream) res.write(delta)
       }
+    }
+    if (body.stream) {
+      res.end()
+      return
     }
     res.json({ content, latencyMs: Date.now() - t0, firstTokenMs, model })
   } catch (e) {
+    if (res.headersSent) {
+      res.end() // 流式中途异常：断流，前端终验失败自动回退缓冲重试
+      return
+    }
     const aborted = (e as Error).name === 'AbortError'
     res.status(aborted ? 504 : 502).json({
       error: aborted ? 'UPSTREAM_TIMEOUT' : 'UPSTREAM_ERROR',

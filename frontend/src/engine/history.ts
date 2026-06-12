@@ -100,23 +100,36 @@ export function executeWithHistory(h: HistoryState, ops: Op[], opts: ExecuteOpti
 
   let scene = r.state
   if (opts.autoGroupName !== undefined && r.error === undefined) {
-    // 本事务新建对象 = createdSeq 大于事务前的全局计数
-    const created = scene.objects.filter((o) => o.createdSeq > h.scene.seq)
-    if (created.length >= 2) {
-      const taken = new Set<string>(
-        scene.objects.flatMap((o) => [o.groupId, o.name]).filter((x): x is string => x !== undefined),
-      )
-      let name = opts.autoGroupName
-      for (let i = 2; taken.has(name); i++) name = `${opts.autoGroupName}${i}`
-      const ids = new Set(created.map((o) => o.id))
-      scene = {
-        ...scene,
-        objects: scene.objects.map((o) => (ids.has(o.id) ? { ...o, groupId: name } : o)),
-      }
-    }
+    scene = applyAutoGroup(h.scene, scene, opts.autoGroupName)
   }
 
   const undoStack = [...h.undoStack, h.scene]
   if (undoStack.length > MAX_UNDO_DEPTH) undoStack.shift()
   return { history: { scene, undoStack, redoStack: [] }, ...r, state: scene }
+}
+
+/** llm-plan 自动编组（§5.1）：base 之后新建的对象（createdSeq > base.seq）编为一组 */
+function applyAutoGroup(base: SceneState, scene: SceneState, autoGroupName: string): SceneState {
+  const created = scene.objects.filter((o) => o.createdSeq > base.seq)
+  if (created.length < 2) return scene
+  const taken = new Set<string>(
+    scene.objects.flatMap((o) => [o.groupId, o.name]).filter((x): x is string => x !== undefined),
+  )
+  let name = autoGroupName
+  for (let i = 2; taken.has(name); i++) name = `${autoGroupName}${i}`
+  const ids = new Set(created.map((o) => o.id))
+  return { ...scene, objects: scene.objects.map((o) => (ids.has(o.id) ? { ...o, groupId: name } : o)) }
+}
+
+/**
+ * 渐进事务提交（协议 v1.4 流式绘制）：流式期间调用方用 executeTransaction 逐 Op
+ * 推进可见场景（不入栈），流结束后由本函数把"事务前基线"一次性压栈——
+ * undo 语义与缓冲模式完全一致（一次回退整幅）。finalScene 与基线相同则不产生快照。
+ */
+export function commitIncremental(base: HistoryState, finalScene: SceneState, opts: ExecuteOptions = {}): HistoryState {
+  if (finalScene === base.scene) return base
+  const scene = opts.autoGroupName !== undefined ? applyAutoGroup(base.scene, finalScene, opts.autoGroupName) : finalScene
+  const undoStack = [...base.undoStack, base.scene]
+  if (undoStack.length > MAX_UNDO_DEPTH) undoStack.shift()
+  return { scene, undoStack, redoStack: [] }
 }

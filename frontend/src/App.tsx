@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type Konva from 'konva'
 import { parseOps, type Op } from './dsl'
-import { createHistory, executeWithHistory, type HistoryOutcome, type HistoryState } from './engine/history'
+import { commitIncremental, createHistory, executeWithHistory, type HistoryOutcome, type HistoryState } from './engine/history'
 import { CanvasStage } from './components/CanvasStage'
 import { DebugPanel, type LogEntry } from './components/DebugPanel'
 import { buildAmbiguityClarify, matchExpecting, type ExpectingItem } from './nlu/clarify'
+import { executeTransaction } from './engine/interpreter'
 import { correctTranscript } from './nlu/correction'
-import { parseWithLlm } from './nlu/llm'
+import { parseWithLlm, parseWithLlmStream } from './nlu/llm'
 import { decideMode, extractPlanSubject, parseRule, type RuleContext } from './nlu/rules'
 import { SpeculativeParser } from './nlu/speculate'
 import { CONFIRM_YES_WORDS } from './shared/lexicon'
@@ -340,6 +341,79 @@ export default function App() {
         const mode = decideMode(utterance)
         pushLog('info', `规则未命中 → 升级 LLM（mode=${mode}）…`)
         void (async () => {
+          const llmCtx = {
+            scene: historyRef.current.scene,
+            asrAlternatives: utterance !== trimmed ? [trimmed] : [],
+            recent: recentRef.current,
+            lastTransaction: lastTxRef.current,
+          }
+
+          // v1.4 流式渐进绘制优先：LLM 边写边画（首个部件 ~2s 可见）；
+          // 终验失败 → 回滚画布 → 落回下方缓冲模式（自带一次重试）
+          const base = historyRef.current
+          let work = base.scene
+          let painted = 0
+          let execFailed = false
+          const stream = await parseWithLlmStream(utterance, mode, llmCtx, (op) => {
+            if (execFailed) return
+            const r2 = executeTransaction(work, [op])
+            if (r2.error !== undefined) {
+              execFailed = true
+              pushLog('warn', `渐进绘制中断：${r2.error.code} ${r2.error.message}`)
+              return
+            }
+            work = r2.state
+            painted += 1
+            historyRef.current = { ...historyRef.current, scene: work }
+            setHistory(historyRef.current)
+            if (op.op === 'create' && op.desc !== undefined) pushLog('info', `▸ ${op.desc}`)
+          })
+
+          if (stream.ok && !execFailed) {
+            const res = stream.result
+            pushLog('info', `LLM 命中 ${res.source}（${res.latencyMs.toFixed(0)}ms，流式渐进 ${painted} 件）`)
+            setMetrics((m) => ({
+              ...m,
+              llmParse: m.llmParse + (res.source === 'llm-parse' ? 1 : 0),
+              llmPlan: m.llmPlan + (res.source === 'llm-plan' ? 1 : 0),
+              last: `${res.source}·${(res.latencyMs / 1000).toFixed(1)}s·流式`,
+            }))
+            if (res.intent === 'clarify') {
+              advance(false)
+              if (res.clarify !== undefined && res.clarify.expecting.length > 0) {
+                pendingClarifyRef.current = {
+                  kind: 'llm',
+                  original: utterance,
+                  expecting: res.clarify.expecting.map((label) => ({ label, id: '' })),
+                }
+              }
+              say(res.clarify?.question ?? res.say ?? '能再说明确一点吗？')
+              return
+            }
+            if (res.intent === 'reject') {
+              advance(false)
+              say(res.say ?? '这个我帮不了，试试绘图指令')
+              return
+            }
+            advance(true)
+            const groupName = res.source === 'llm-plan' ? (extractPlanSubject(utterance) ?? undefined) : undefined
+            const committed = commitIncremental(base, work, { autoGroupName: groupName })
+            historyRef.current = committed
+            setHistory(committed)
+            if (groupName !== undefined && committed.scene !== work) {
+              pushLog('info', `已自动编组「${groupName}」（整组移动/缩放/删除生效）`)
+            }
+            say(res.say)
+            recordSuccess(utterance, res.ops)
+            return
+          }
+
+          // 回滚渐进内容，退回缓冲模式
+          if (painted > 0) {
+            historyRef.current = base
+            setHistory(base)
+          }
+          pushLog('warn', `流式路径未完成（${stream.ok ? '执行中断' : stream.error}）→ 回退缓冲模式…`)
           const llm = await parseWithLlm(utterance, mode, {
             scene: historyRef.current.scene,
             asrAlternatives: utterance !== trimmed ? [trimmed] : [],

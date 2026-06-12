@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Op } from '../dsl'
-import { createHistory, executeWithHistory, MAX_UNDO_DEPTH, type HistoryState } from './history'
+import { executeTransaction } from './interpreter'
+import { commitIncremental, createHistory, executeWithHistory, MAX_UNDO_DEPTH, type HistoryState } from './history'
 
 /** 测试辅助：依次执行多个事务，断言无错误 */
 function runAll(transactions: Op[][], from?: HistoryState): HistoryState {
@@ -160,5 +161,31 @@ describe('llm-plan 自动编组（§5.1，executeWithHistory autoGroupName）', 
     const groups = new Set(again.history.scene.objects.map((o) => o.groupId))
     expect(groups.has('雪人')).toBe(true)
     expect(groups.has('雪人2')).toBe(true)
+  })
+})
+
+describe('渐进事务提交 commitIncremental（协议 v1.4 流式绘制）', () => {
+  it('流式逐 Op 推进后一次性入栈：undo 一步回退整幅；autoGroup 生效', () => {
+    const base = createHistory()
+    let scene = base.scene
+    for (const op of [
+      { op: 'create', shape: 'circle', name: '身体', at: { x: 500, y: 500 }, size: 100 },
+      { op: 'create', shape: 'circle', name: '头', at: { x: 500, y: 330 }, size: 60 },
+    ] as const) {
+      const r = executeTransaction(scene, [op as Op])
+      expect(r.error).toBeUndefined()
+      scene = r.state
+    }
+    const h = commitIncremental(base, scene, { autoGroupName: '雪人' })
+    expect(h.scene.objects).toHaveLength(2)
+    expect(h.scene.objects.every((o) => o.groupId === '雪人')).toBe(true)
+    expect(h.undoStack).toHaveLength(1)
+    const undone = executeWithHistory(h, [{ op: 'undo' }])
+    expect(undone.history.scene.objects).toHaveLength(0)
+  })
+
+  it('场景未变（流式零产出）不产生快照', () => {
+    const base = createHistory()
+    expect(commitIncremental(base, base.scene)).toBe(base)
   })
 })
