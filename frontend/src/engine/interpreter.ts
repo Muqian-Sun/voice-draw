@@ -132,7 +132,10 @@ function membersOf(state: SceneState, obj: SceneObject): SceneObject[] {
  */
 function geometryScope(state: SceneState, sel: TargetSelector, obj: SceneObject): SceneObject[] {
   if (obj.groupId === undefined) return [obj]
-  const wantsGroup = 'byFocus' in sel || ('byName' in sel && sel.byName === obj.groupId)
+  // 整组的两个明确意图：组名引用（"把猫移走"）；或 byFocus 且焦点粒度=组（刚画完整组，"它"=整组）。
+  // byFocus 且焦点粒度=object（刚编辑过某部件，"它"=该部件）→ 只作用该成员（§5.1 v1.1）。
+  const wantsGroup =
+    ('byName' in sel && sel.byName === obj.groupId) || ('byFocus' in sel && state.focusScope === 'group')
   return wantsGroup ? membersOf(state, obj) : [obj]
 }
 
@@ -151,16 +154,18 @@ function unionBBox(objs: SceneObject[]): BBox {
   return { x: minX, y: minY, w: maxX - minX, h: maxY - minY }
 }
 
-/** 批量修补对象 + 设置焦点（修改类操作焦点跟随，§5.1） */
+/** 批量修补对象 + 设置焦点与粒度（修改类操作焦点跟随，§5.1）。scope 缺省 object */
 function patchMany(
   state: SceneState,
   patches: ReadonlyMap<string, Partial<SceneObject>>,
   focusId: string,
+  scope: 'group' | 'object' = 'object',
 ): SceneState {
   return {
     ...state,
     objects: state.objects.map((o) => (patches.has(o.id) ? { ...o, ...patches.get(o.id) } : o)),
     focusId,
+    focusScope: scope,
   }
 }
 
@@ -454,6 +459,7 @@ function execCreateResolved(state: SceneState, op: CreateOp): OpResult {
     state: {
       objects: [...state.objects, obj],
       focusId: id, // 焦点规则 §5.1：create → 焦点 = 新对象
+      focusScope: 'object', // 单个 create → 焦点粒度=对象（"它"=刚画的这个）
       seq: state.seq + 1,
       seqByShape: { ...state.seqByShape, [op.shape]: shapeSeq },
     },
@@ -466,6 +472,7 @@ function patchObject(state: SceneState, id: string, patch: Partial<SceneObject>)
     ...state,
     objects: state.objects.map((o) => (o.id === id ? { ...o, ...patch } : o)),
     focusId: id, // 焦点规则 §5.1：修改类操作 → 焦点 = 被操作对象
+    focusScope: 'object', // 编辑单个对象 → 焦点粒度=对象（后续"它"指该对象，非整组）
   }
 }
 
@@ -514,7 +521,7 @@ function execOp(state: SceneState, op: Op): OpResult {
       const patches = new Map(members.map((m) => [m.id, { x: m.x + dx, y: m.y + dy }]))
       return {
         ok: true,
-        state: patchMany(state, patches, t.obj.id),
+        state: patchMany(state, patches, t.obj.id, members.length > 1 ? 'group' : 'object'),
         ...(c.clamped ? { notice: `${t.obj.groupId ?? t.obj.id} 已拉回画布内（§5.5 clamp）` } : {}),
       }
     }
@@ -529,6 +536,7 @@ function execOp(state: SceneState, op: Op): OpResult {
           ...state,
           objects: state.objects.filter((o) => !ids.has(o.id)),
           focusId: undefined, // 焦点规则 §5.1：delete → 焦点清空
+          focusScope: undefined,
         },
       }
     }
@@ -572,7 +580,7 @@ function execOp(state: SceneState, op: Op): OpResult {
         )
         return {
           ok: true,
-          state: patchMany(state, patches, o.id),
+          state: patchMany(state, patches, o.id, 'group'),
           ...(c.clamped ? { notice: `${o.groupId} 已拉回画布内（§5.5 clamp）` } : {}),
         }
       }
@@ -640,7 +648,7 @@ function execOp(state: SceneState, op: Op): OpResult {
             },
           ]),
         )
-        return { ok: true, state: patchMany(state, patches, t.obj.id) }
+        return { ok: true, state: patchMany(state, patches, t.obj.id, 'group') }
       }
       return { ok: true, state: patchObject(state, t.obj.id, { rotation: norm(t.obj.rotation + op.degrees) }) }
     }
@@ -672,7 +680,7 @@ function execOp(state: SceneState, op: Op): OpResult {
         const delta = 'above' in op.to ? 0.5 : -0.5
         const scope = geometryScope(state, op.target, o)
         const patches = new Map(scope.map((m, i) => [m.id, { z: ref.obj.z + delta + (i + 1) * 0.01 * Math.sign(delta) }]))
-        return { ok: true, state: patchMany(state, patches, o.id) }
+        return { ok: true, state: patchMany(state, patches, o.id, scope.length > 1 ? 'group' : 'object') }
       }
       const members = geometryScope(state, op.target, o)
       if (members.length > 1) {
@@ -697,7 +705,7 @@ function execOp(state: SceneState, op: Op): OpResult {
         if (anchor === null) return { ok: true, state: patchObject(state, o.id, {}) } // 已在最前/最后
         const a = anchor
         const patches = new Map(sortedMembers.map((m, i) => [m.id, { z: a + (i + 1) / (sortedMembers.length + 1) }]))
-        return { ok: true, state: patchMany(state, patches, o.id) }
+        return { ok: true, state: patchMany(state, patches, o.id, 'group') }
       }
       const zs = state.objects.map((x) => x.z)
       let z = o.z
@@ -829,7 +837,11 @@ function execOp(state: SceneState, op: Op): OpResult {
       let name = op.name ?? '组1'
       for (let i = 2; taken.has(name); i++) name = `${base}${i}`
       const patches = new Map(objs.map((m) => [m.id, { groupId: name }]))
-      return { ok: true, state: patchMany(state, patches, objs[objs.length - 1].id), notice: `已编组：${name}（${objs.length} 个对象）` }
+      return {
+        ok: true,
+        state: patchMany(state, patches, objs[objs.length - 1].id, 'group'), // 编组 → 焦点粒度=组（"它"=整组）
+        notice: `已编组：${name}（${objs.length} 个对象）`,
+      }
     }
 
     case 'ungroup': {

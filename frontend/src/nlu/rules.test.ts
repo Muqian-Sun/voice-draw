@@ -251,3 +251,29 @@ describe('extractPlanSubject（llm-plan 自动编组组名，§5.1）', () => {
     expect(extractPlanSubject('画个圆')).toBeNull() // 全部是词表词
   })
 })
+
+describe('未解析名词不回退 byFocus，而升级 LLM（§4.2 v1.1，分组多轮编辑防误伤整组）', () => {
+  it('"把头变大一点"（头非已知名）→ 不命中规则（交 LLM 映射 头→小猫头），不 byFocus', () => {
+    // 场景有焦点但"头"不是已知对象名（实际部件叫"小猫头"）
+    expect(parseRule('把头变大一点', { hasFocus: true, names: ['小猫头', '左耳'] })).toBeNull()
+  })
+
+  it('"把耳朵往上移一点"（耳朵非已知名）→ 升级 LLM', () => {
+    expect(parseRule('把耳朵往上移一点', { hasFocus: true, names: ['左耳', '右耳'] })).toBeNull()
+  })
+
+  it('指代词"把它变大一点" → 仍走 byFocus（不误升级）', () => {
+    const r = parseRule('把它变大一点', { hasFocus: true })
+    expect(r?.ops).toEqual([{ op: 'resize', target: { byFocus: true }, scale: 1.3 }])
+  })
+
+  it('纯量词无目标"变大一点" + 有焦点 → byFocus（空目标不算未解析名词）', () => {
+    const r = parseRule('变大一点', { hasFocus: true })
+    expect(r?.ops).toEqual([{ op: 'resize', target: { byFocus: true }, scale: 1.3 }])
+  })
+
+  it('已知名"把小猫头变大一点" → 规则命中 byName 成员', () => {
+    const r = parseRule('把小猫头变大一点', { hasFocus: true, names: ['小猫头', '左耳'] })
+    expect(r?.ops).toEqual([{ op: 'resize', target: { byName: '小猫头' }, scale: 1.3 }])
+  })
+})
