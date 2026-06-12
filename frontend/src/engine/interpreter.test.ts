@@ -410,3 +410,49 @@ describe('group 引用语义（§5.6）', () => {
     expect(zOf('头')).toBeGreaterThan(zOf('身体')) // 组内相对顺序保持
   })
 })
+
+describe('对象内贴 inside（§5.3 v1.1）', () => {
+  it('门嵌在房子底边：bbox 底边贴齐（gap 缺省 0），水平居中', () => {
+    const s = run([
+      { op: 'create', shape: 'rect', name: '房子', at: { x: 512, y: 400 }, width: 200, height: 180 },
+      { op: 'create', shape: 'rect', name: '门', at: { ref: { byName: '房子' }, anchor: 'bottom', inside: true }, width: 50, height: 80 },
+    ])
+    const house = s.objects.find((o) => o.name === '房子')!
+    const door = s.objects.find((o) => o.name === '门')!
+    expect(door.y + 80 / 2).toBe(house.y + 180 / 2) // 底边贴齐
+    expect(door.x).toBe(house.x) // 水平居中
+  })
+
+  it('窗在房子内部角落：gap 作内边距', () => {
+    const s = run([
+      { op: 'create', shape: 'rect', name: '房子', at: { x: 512, y: 400 }, width: 200, height: 180 },
+      { op: 'create', shape: 'rect', name: '窗', at: { ref: { byName: '房子' }, anchor: 'top-left', inside: true, gap: 15 }, width: 40, height: 40 },
+    ])
+    const house = s.objects.find((o) => o.name === '房子')!
+    const win = s.objects.find((o) => o.name === '窗')!
+    expect(win.x - 20).toBe(house.x - 100 + 15) // 左边缘 = 房子左 + 15
+    expect(win.y - 20).toBe(house.y - 90 + 15)
+  })
+
+  it('无 inside 仍为外贴（既有语义不变）', () => {
+    const s = run([
+      { op: 'create', shape: 'rect', name: '房子', at: { x: 512, y: 400 }, width: 200, height: 180 },
+      { op: 'create', shape: 'rect', name: '招牌', at: { ref: { byName: '房子' }, anchor: 'bottom' }, width: 50, height: 30 },
+    ])
+    const house = s.objects.find((o) => o.name === '房子')!
+    const sign = s.objects.find((o) => o.name === '招牌')!
+    expect(sign.y - 15).toBe(house.y + 90 + 20) // 上边 = 房子底 + gap 20
+  })
+
+  it('move.to 同样支持 inside（把门挪到房子右下角内侧）', () => {
+    const s0 = run([
+      { op: 'create', shape: 'rect', name: '房子', at: { x: 512, y: 400 }, width: 200, height: 180 },
+      { op: 'create', shape: 'rect', name: '门', at: { x: 100, y: 100 }, width: 50, height: 80 },
+    ])
+    const s = run([{ op: 'move', target: { byName: '门' }, to: { ref: { byName: '房子' }, anchor: 'bottom-right', inside: true } }], s0)
+    const house = s.objects.find((o) => o.name === '房子')!
+    const door = s.objects.find((o) => o.name === '门')!
+    expect(door.x + 25).toBe(house.x + 100)
+    expect(door.y + 40).toBe(house.y + 90)
+  })
+})

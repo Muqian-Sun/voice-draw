@@ -12,7 +12,7 @@
  */
 import type { CreateOp, Op, Position, SizeSpec, TargetSelector } from '../dsl'
 import { CANVAS_PADDING, DEFAULT_GAP, DEFAULT_STYLE, SEMANTIC_SIZE } from '../shared/lexicon'
-import { autoPlace, clampCenter, placeInside, placeOutside, type BBox, type Point } from './layout'
+import { autoPlace, clampCenter, placeInside, placeInsideBBox, placeOutside, type BBox, type Point } from './layout'
 import type { SceneObject, SceneState } from './scene'
 import { getBBox, getCenter } from './scene'
 
@@ -246,7 +246,9 @@ function resolvePosition(state: SceneState, at: Position | undefined, w: number,
   } else {
     const t = resolveTarget(state, at.ref)
     if (!t.ok) return t
-    p = placeOutside(bboxOf(t.obj), w, h, at.anchor, at.gap ?? DEFAULT_GAP)
+    p = at.inside
+      ? placeInsideBBox(bboxOf(t.obj), w, h, at.anchor, at.gap ?? 0) // 对象内贴（v1.1）：gap 作内边距，缺省贴齐
+      : placeOutside(bboxOf(t.obj), w, h, at.anchor, at.gap ?? DEFAULT_GAP)
   }
   if (at.offset) p = { x: p.x + at.offset[0], y: p.y + at.offset[1] }
   return { ok: true, point: p }

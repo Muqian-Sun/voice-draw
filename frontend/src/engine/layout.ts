@@ -55,14 +55,14 @@ export function placeOutside(ref: BBox, w: number, h: number, anchor: Anchor, ga
   }
 }
 
-/** §5.3 ref=canvas → 内贴。返回新对象（尺寸 w×h）的中心点 */
-export function placeInside(w: number, h: number, anchor: Anchor, pad: number): Point {
-  const L = pad + w / 2
-  const R = CANVAS_WIDTH - pad - w / 2
-  const T = pad + h / 2
-  const B = CANVAS_HEIGHT - pad - h / 2
-  const CX = CANVAS_WIDTH / 2
-  const CY = CANVAS_HEIGHT / 2
+/** §5.3 内贴（ref=canvas 或对象 inside:true）：贴参照 bbox 对应边/角内侧。返回新对象中心点 */
+export function placeInsideBBox(ref: BBox, w: number, h: number, anchor: Anchor, pad: number): Point {
+  const L = ref.x + pad + w / 2
+  const R = ref.x + ref.w - pad - w / 2
+  const T = ref.y + pad + h / 2
+  const B = ref.y + ref.h - pad - h / 2
+  const CX = centerX(ref)
+  const CY = centerY(ref)
   switch (anchor) {
     case 'center':
       return { x: CX, y: CY }
@@ -83,6 +83,11 @@ export function placeInside(w: number, h: number, anchor: Anchor, pad: number): 
     case 'bottom-right':
       return { x: R, y: B }
   }
+}
+
+/** §5.3 ref=canvas → 内贴（placeInsideBBox 的画布特例） */
+export function placeInside(w: number, h: number, anchor: Anchor, pad: number): Point {
+  return placeInsideBBox({ x: 0, y: 0, w: CANVAS_WIDTH, h: CANVAS_HEIGHT }, w, h, anchor, pad)
 }
 
 export interface ClampResult extends Point {
