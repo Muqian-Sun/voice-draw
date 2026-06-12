@@ -363,8 +363,9 @@ export default function App() {
           const ok = !('error' in outcome && outcome.error)
           if (res.source === 'llm-plan' && ok) {
             if (groupName !== undefined) pushLog('info', `已自动编组「${groupName}」（整组移动/缩放/删除生效）`)
+            // desc 只进日志不播报：图像瞬时画完，逐条语音报步骤是冗余（用户反馈）；完成语照播
             for (const o of res.ops) {
-              if (o.op === 'create' && o.desc !== undefined) say(o.desc)
+              if (o.op === 'create' && o.desc !== undefined) pushLog('info', `▸ ${o.desc}`)
             }
           }
           if (speakOutcome(outcome, res.say, res.ops)) recordSuccess(utterance, res.ops)
