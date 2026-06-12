@@ -82,6 +82,8 @@ export const positionSchema = z.union([
       anchor: anchorSchema,
       offset: vec2Schema.optional(),
       gap: z.number().optional(),
+      // ref 为对象时内贴（"门在房子底边"，协议 §1.3 v1.1）；ref=canvas 恒内贴，此字段无效
+      inside: z.literal(true).optional(),
     })
     .strict(),
 ])
