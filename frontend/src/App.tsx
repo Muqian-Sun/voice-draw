@@ -16,6 +16,14 @@ import { useVoice } from './voice/useVoice'
 
 let logSeq = 0
 
+/** 视觉质检指令（能力 #27）：修正必须声明式，VLM 像素估读不可靠 */
+const CRITIQUE_INSTRUCTION =
+  '这是当前画布的渲染截图与场景 JSON。请对照检查视觉缺陷：部件错位/悬空/朝向错误/比例失调/不当遮挡。' +
+  '发现缺陷则输出修正 ops（byName/byId 引用现有对象）。修正位置**必须**用相对定位' +
+  '（move.to 的 ref+anchor+offset/inside，参照 scene JSON 里的真实对象），' +
+  '禁止自己估算绝对 x,y——你的像素估读不可靠；' +
+  "画面没有明显缺陷则 intent:'reject' 且 say:'画面看起来没问题'。"
+
 export default function App() {
   const [history, setHistory] = useState<HistoryState>(createHistory)
   const historyRef = useRef(history)
@@ -134,6 +142,41 @@ export default function App() {
       void getTts().speak(text)
     },
     [getTts, pushLog],
+  )
+
+  /** 视觉自检修复环：截图 → 多模态质检 → 修正执行，画面通过即停（最多 maxRounds 轮） */
+  const runVisualCheck = useCallback(
+    async (maxRounds: number): Promise<{ rounds: number; fixed: number; clean: boolean }> => {
+      let fixed = 0
+      for (let round = 1; round <= maxRounds; round++) {
+        const stage = stageRef.current
+        if (stage === null) return { rounds: round - 1, fixed, clean: false }
+        const overlay = stage.findOne<Konva.Layer>('.overlay')
+        overlay?.visible(false)
+        const image = stage.toDataURL({ pixelRatio: 0.75 })
+        overlay?.visible(true)
+        const llm = await parseWithLlm(CRITIQUE_INSTRUCTION, 'parse', { scene: historyRef.current.scene, image })
+        if (!llm.ok) {
+          pushLog('error', `自检第 ${round} 轮失败：${llm.error}`)
+          return { rounds: round, fixed, clean: false }
+        }
+        const res = llm.result
+        if (res.intent !== 'ops' || res.ops.length === 0) {
+          pushLog('info', `自检第 ${round} 轮：画面通过 ✓（${res.latencyMs.toFixed(0)}ms）`)
+          return { rounds: round, fixed, clean: true }
+        }
+        const outcome = execOps(res.ops)
+        const failed = 'error' in outcome && Boolean(outcome.error)
+        pushLog(
+          failed ? 'warn' : 'info',
+          `自检第 ${round} 轮：修正 ${res.ops.length} 处——${res.say ?? ''}（${res.latencyMs.toFixed(0)}ms）`,
+        )
+        if (failed) return { rounds: round, fixed, clean: false }
+        fixed += res.ops.length
+      }
+      return { rounds: maxRounds, fixed, clean: false } // 轮次用尽仍有发现（保守停手防震荡）
+    },
+    [execOps, pushLog],
   )
 
   // 最近 3 轮成功指令（协议 §2.2 recent，供 LLM 多轮指代）
@@ -275,37 +318,16 @@ export default function App() {
           say('画布是空的，没什么可检查')
           return
         }
-        pushLog('info', '视觉自检：截图 → 多模态 LLM 质检中…')
+        pushLog('info', '视觉自检：截图 → 多模态 LLM 质检（≤3 轮）…')
         void (async () => {
-          const stage = stageRef.current
-          const overlay = stage?.findOne<Konva.Layer>('.overlay')
-          overlay?.visible(false)
-          const image = stage?.toDataURL({ pixelRatio: 0.75 }) ?? ''
-          overlay?.visible(true)
-          const llm = await parseWithLlm(
-            '这是当前画布的渲染截图与场景 JSON。请对照检查视觉缺陷：部件错位/悬空/朝向错误/比例失调/不当遮挡。' +
-              '发现缺陷则输出修正 ops（byName/byId 引用现有对象）。修正位置**必须**用相对定位' +
-              '（move.to 的 ref+anchor+offset/inside，参照 scene JSON 里的真实对象），' +
-              '禁止自己估算绝对 x,y——你的像素估读不可靠；' +
-              "画面没有明显缺陷则 intent:'reject' 且 say:'画面看起来没问题'。",
-            'parse',
-            { scene: historyRef.current.scene, image },
-          )
-          if (!llm.ok) {
-            pushLog('error', `自检失败：${llm.error}`)
+          const r = await runVisualCheck(3)
+          if (r.fixed > 0) {
+            advance(true)
+            say(r.clean ? `修正了 ${r.fixed} 处，画面没问题了` : `修正了 ${r.fixed} 处`)
+          } else {
             advance(false)
-            say('自检没成功，请再试一次')
-            return
+            say(r.clean ? '画面看起来没问题' : '自检没成功，请再试一次')
           }
-          const res = llm.result
-          pushLog('info', `自检返回 ${res.source}（${res.latencyMs.toFixed(0)}ms，confidence ${res.confidence.toFixed(2)}）`)
-          if (res.intent !== 'ops') {
-            advance(false)
-            say(res.say ?? '画面看起来没问题')
-            return
-          }
-          advance(true)
-          speakOutcome(execOps(res.ops), res.say ?? '修正好了', res.ops)
         })()
         return
       }
@@ -389,7 +411,7 @@ export default function App() {
       advance(true)
       if (speakOutcome(execOps(r.ops), r.say, r.ops)) recordSuccess(utterance, r.ops)
     },
-    [execOps, pushLog, recordSuccess, ruleCtx, say],
+    [execOps, pushLog, recordSuccess, ruleCtx, runVisualCheck, say],
   )
 
   // 控制台入口与面板共用同一执行通道
