@@ -22,7 +22,7 @@ const DEFAULT_BASE_URL = 'https://ark.cn-beijing.volces.com/api/coding/v3'
 const DEFAULT_MODEL = 'doubao-seed-code-2.0'
 const DEFAULT_VISION_MODEL = 'doubao-seed-code-2.0'
 
-export const FIRST_TOKEN_TIMEOUT_MS = { parse: 4_000, plan: 10_000 } as const
+export const FIRST_TOKEN_TIMEOUT_MS = { parse: 4_000, plan: 20_000 } as const // plan 放宽：seed-code-2.0 偶发排队尾延迟 >10s
 /** 首 token 之后的总时长兜底（流卡死保护）；plan 长输出在 ~20 tok/s 上游需更宽 */
 export const TOTAL_TIMEOUT_MS = { parse: 30_000, plan: 90_000 } as const
 
