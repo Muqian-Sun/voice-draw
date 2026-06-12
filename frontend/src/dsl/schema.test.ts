@@ -121,3 +121,19 @@ describe('事务（parseOps，协议 §1.5）', () => {
     if (!r.ok) expect(r.error).toContain('1')
   })
 })
+
+describe('v1.6 schema（arc / gradient / cornerRadius）', () => {
+  it('arc 形状合法；gradient/cornerRadius 字段', () => {
+    expect(parseOp({ op: 'create', shape: 'arc', size: 80, angle: 180, innerRadius: 40 }).ok).toBe(true)
+    expect(parseOp({ op: 'create', shape: 'rect', width: 100, height: 60, cornerRadius: 10 }).ok).toBe(true)
+    expect(parseOp({ op: 'create', shape: 'rect', width: 100, height: 200, gradient: { from: '#87CEEB', to: '#fff', angle: 90 } }).ok).toBe(true)
+  })
+
+  it('style 可只给 gradient', () => {
+    expect(parseOp({ op: 'style', target: { byName: '天空' }, gradient: { from: '#a', to: '#b' } }).ok).toBe(true)
+  })
+
+  it('gradient 缺 from/to 非法', () => {
+    expect(parseOp({ op: 'create', shape: 'rect', width: 10, height: 10, gradient: { from: '#a' } }).ok).toBe(false)
+  })
+})

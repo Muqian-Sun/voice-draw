@@ -77,7 +77,7 @@ describe('validateLlmOutput（协议 §2.3 业务校验）', () => {
     const tooMany = JSON.stringify({
       intent: 'ops',
       confidence: 0.9,
-      ops: Array.from({ length: 21 }, () => ({ op: 'create', shape: 'circle', desc: 'd' })),
+      ops: Array.from({ length: 29 }, () => ({ op: 'create', shape: 'circle', desc: 'd' })),
       say: 'x',
     })
     expect(validateLlmOutput(tooMany, 'plan').ok).toBe(false)

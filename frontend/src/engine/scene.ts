@@ -13,16 +13,19 @@ export interface SceneObject {
   shape: ShapeKind
   x: number
   y: number
-  radius?: number // circle / triangle(外接圆半径) / star(外半径)
-  innerRadius?: number // star
+  radius?: number // circle / triangle(外接圆半径) / star(外半径) / arc(外半径)
+  innerRadius?: number // star / arc
   radiusX?: number // ellipse
   radiusY?: number
   width?: number // rect
   height?: number
+  cornerRadius?: number // v1.6 rect 圆角
+  angle?: number // v1.6 arc 扇形角度（度）
   points?: number[] // line/polyline/path：相对 (x,y) 的扁平数组 [x1,y1,x2,y2,...]
   text?: string
   fontSize?: number
   fill?: string
+  gradient?: { from: string; to: string; angle?: number } // v1.6 渐变填充（优先于 fill）
   stroke?: string
   strokeWidth?: number
   opacity?: number
@@ -59,7 +62,9 @@ export function getBBox(o: SceneObject): [number, number, number, number] {
       const r = o.radius ?? 0
       return [o.x - r, o.y - r, 2 * r, 2 * r]
     }
-    case 'star': {
+    case 'star':
+    case 'arc': {
+      // arc 近似按外半径方形包围（不精算扇形真实外接框，足够定位/clamp 用）
       const r = o.radius ?? 0
       return [o.x - r, o.y - r, 2 * r, 2 * r]
     }

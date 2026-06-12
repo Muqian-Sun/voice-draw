@@ -230,6 +230,11 @@ function buildGeometry(state: SceneState, op: CreateOp): GeometryResult {
     case 'polyline':
     case 'path':
       return { ok: true, geo: { points: (op.points ?? []).flat() } }
+    case 'arc': {
+      // v1.6：外半径=v，内半径默认 0（扇形），角度默认 270；起始角由 rotation 表达
+      const inner = op.innerRadius ?? 0
+      return { ok: true, geo: { radius: Number.isNaN(w) ? v : w / 2, innerRadius: inner, angle: op.angle ?? 270 } }
+    }
     case 'text':
       return { ok: true, geo: { text: op.text, fontSize: op.fontSize ?? Math.max(16, 0.5 * v) } }
   }
@@ -445,10 +450,13 @@ function execCreateResolved(state: SceneState, op: CreateOp): OpResult {
           strokeWidth: op.strokeWidth ?? (isLine ? DEFAULT_STYLE.lineStrokeWidth : undefined),
         }
       : {
-          fill: op.fill ?? DEFAULT_STYLE.fill,
+          // v1.6：渐变优先于纯色；都没给才用缺省填充
+          ...(op.gradient ? { gradient: op.gradient } : { fill: op.fill ?? DEFAULT_STYLE.fill }),
           ...(op.stroke ? { stroke: op.stroke } : {}),
           ...(op.strokeWidth ? { strokeWidth: op.strokeWidth } : {}),
         }),
+    ...(op.cornerRadius !== undefined && op.shape === 'rect' ? { cornerRadius: op.cornerRadius } : {}),
+    ...(op.opacity !== undefined ? { opacity: op.opacity } : {}),
     rotation: op.rotation ?? 0,
     z: maxZ + 1,
     createdSeq: state.seq + 1,
@@ -485,7 +493,11 @@ function execOp(state: SceneState, op: Op): OpResult {
       const t = resolveTarget(state, op.target)
       if (!t.ok) return t
       const patch: Partial<SceneObject> = {}
-      if (op.fill !== undefined) patch.fill = op.fill
+      if (op.fill !== undefined) {
+        patch.fill = op.fill
+        patch.gradient = undefined // 改纯色 → 清除原渐变
+      }
+      if (op.gradient !== undefined) patch.gradient = op.gradient // v1.6 渐变填充
       if (op.stroke !== undefined) patch.stroke = op.stroke
       if (op.strokeWidth !== undefined) patch.strokeWidth = op.strokeWidth
       if (op.opacity !== undefined) patch.opacity = op.opacity
