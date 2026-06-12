@@ -17,9 +17,10 @@ import { SYSTEM_PROMPT } from './prompt.generated.js'
 // 火山方舟 Coding Plan（用户决策，弃七牛）：/api/coding 为 Anthropic 协议，
 // /api/coding/v3 为 OpenAI 兼容协议——本服务用后者，复用 chat/completions + SSE delta
 const DEFAULT_BASE_URL = 'https://ark.cn-beijing.volces.com/api/coding/v3'
-const DEFAULT_MODEL = 'deepseek-v4-flash'
-// 视觉自检（按需多模态）：同端点同 key，doubao-seed-code 实测支持图像输入
-const DEFAULT_VISION_MODEL = 'doubao-seed-code'
+// 统一单模型（用户决策）：doubao-seed-code-2.0 文本+视觉双修——实测 parse 2.7s/plan 5.8s
+// 不输 deepseek-v4-flash，且原生支持图像输入（自检无需切模型）；env 仍可分别覆盖
+const DEFAULT_MODEL = 'doubao-seed-code-2.0'
+const DEFAULT_VISION_MODEL = 'doubao-seed-code-2.0'
 
 export const FIRST_TOKEN_TIMEOUT_MS = { parse: 4_000, plan: 10_000 } as const
 /** 首 token 之后的总时长兜底（流卡死保护）；plan 长输出在 ~20 tok/s 上游需更宽 */
