@@ -18,6 +18,8 @@ import { SYSTEM_PROMPT } from './prompt.generated.js'
 // /api/coding/v3 为 OpenAI 兼容协议——本服务用后者，复用 chat/completions + SSE delta
 const DEFAULT_BASE_URL = 'https://ark.cn-beijing.volces.com/api/coding/v3'
 const DEFAULT_MODEL = 'deepseek-v4-flash'
+// 视觉自检（按需多模态）：同端点同 key，doubao-seed-code 实测支持图像输入
+const DEFAULT_VISION_MODEL = 'doubao-seed-code'
 
 export const FIRST_TOKEN_TIMEOUT_MS = { parse: 4_000, plan: 10_000 } as const
 /** 首 token 之后的总时长兜底（流卡死保护）；plan 长输出在 ~20 tok/s 上游需更宽 */
@@ -31,22 +33,35 @@ const requestSchema = z
     asr_alternatives: z.array(z.string()).max(2).optional(),
     recent: z.array(z.object({ utterance: z.string(), summary: z.string() }).strict()).max(3).optional(),
     retry: z.object({ previous: z.string(), error: z.string() }).strict().optional(),
+    /** 画布截图 dataURL（视觉自检按需附带，协议 §2.2 v1.2）；带图时走多模态模型 */
+    image: z.string().startsWith('data:image/').max(2_000_000).optional(),
   })
   .strict()
 
 export type LlmParseRequest = z.infer<typeof requestSchema>
 
+type ChatContent =
+  | string
+  | Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }>
+
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant'
-  content: string
+  content: ChatContent
 }
 
-/** 组装上游消息：system 固定；user = 变化信息 JSON；重试时追加上一轮输出与纠错指示 */
+/** 组装上游消息：system 固定；user = 变化信息 JSON（带图时为多模态数组）；重试时追加上一轮输出与纠错指示 */
 export function buildMessages(body: LlmParseRequest): ChatMessage[] {
-  const { retry, ...payload } = body
+  const { retry, image, ...payload } = body
+  const userContent: ChatMessage['content'] =
+    image === undefined
+      ? JSON.stringify(payload)
+      : [
+          { type: 'text', text: JSON.stringify(payload) },
+          { type: 'image_url', image_url: { url: image } },
+        ]
   const messages: ChatMessage[] = [
     { role: 'system', content: SYSTEM_PROMPT },
-    { role: 'user', content: JSON.stringify(payload) },
+    { role: 'user', content: userContent },
   ]
   if (retry) {
     messages.push(
@@ -86,7 +101,10 @@ export async function handleLlmParse(req: Request, res: Response): Promise<void>
   }
   const body = parsed.data
   const baseUrl = (process.env.ARK_LLM_BASE_URL || DEFAULT_BASE_URL).replace(/\/$/, '')
-  const model = process.env.ARK_LLM_MODEL || DEFAULT_MODEL
+  const model =
+    body.image !== undefined
+      ? process.env.ARK_VISION_MODEL || DEFAULT_VISION_MODEL
+      : process.env.ARK_LLM_MODEL || DEFAULT_MODEL
   const firstTokenTimeout = FIRST_TOKEN_TIMEOUT_MS[body.mode]
 
   const t0 = Date.now()

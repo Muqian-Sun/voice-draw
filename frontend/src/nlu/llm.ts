@@ -186,6 +186,8 @@ export interface LlmCallContext {
   asrAlternatives?: string[]
   recent?: Array<{ utterance: string; summary: string }>
   lastTransaction?: { utterance: string; opCount: number }
+  /** 画布截图 dataURL（视觉自检按需附带，backend 自动切多模态模型） */
+  image?: string
   /** 测试注入；缺省 fetch */
   fetchFn?: typeof fetch
   baseUrl?: string
@@ -229,6 +231,7 @@ export async function parseWithLlm(
     scene: buildSceneSummary(ctx.scene, utterance, ctx.lastTransaction),
     ...(ctx.asrAlternatives !== undefined && ctx.asrAlternatives.length > 0 && { asr_alternatives: ctx.asrAlternatives }),
     ...(ctx.recent !== undefined && ctx.recent.length > 0 && { recent: ctx.recent }),
+    ...(ctx.image !== undefined && { image: ctx.image }),
   }
 
   const first = await callBackend(payload, fetchFn, baseUrl)

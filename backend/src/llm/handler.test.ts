@@ -14,7 +14,7 @@ describe('buildMessages', () => {
     expect(m).toHaveLength(2)
     expect(m[0]).toEqual({ role: 'system', content: SYSTEM_PROMPT })
     expect(m[1].role).toBe('user')
-    const payload = JSON.parse(m[1].content)
+    const payload = JSON.parse(m[1].content as string)
     expect(payload.utterance).toBe('画一个雪人')
     expect(payload.mode).toBe('plan')
     expect(payload.retry).toBeUndefined() // retry 是转发控制字段，不进载荷
@@ -55,5 +55,27 @@ describe('System Prompt（规格 附录 A）', () => {
     expect(SYSTEM_PROMPT).toContain('"一点"=60px')
     expect(SYSTEM_PROMPT).toContain('"small"=40 "medium"=80 "large"=160')
     expect(SYSTEM_PROMPT).toContain('禁止输出 clear、undo、redo、export')
+  })
+})
+
+describe('视觉自检（image 附带时多模态消息，§2.2 v1.2）', () => {
+  it('带 image → user 内容为 text+image_url 数组，image 不进文本载荷', () => {
+    const m = buildMessages({
+      utterance: '检查画面',
+      mode: 'parse',
+      scene: { objects: [] },
+      image: 'data:image/png;base64,abc',
+    })
+    const user = m[1]
+    expect(Array.isArray(user.content)).toBe(true)
+    const parts = user.content as Array<{ type: string; text?: string; image_url?: { url: string } }>
+    expect(parts[0].type).toBe('text')
+    expect(parts[0].text).not.toContain('data:image')
+    expect(parts[1]).toEqual({ type: 'image_url', image_url: { url: 'data:image/png;base64,abc' } })
+  })
+
+  it('不带 image → user 内容仍为纯字符串（既有行为不变）', () => {
+    const m = buildMessages({ utterance: '画个圆', mode: 'parse', scene: { objects: [] } })
+    expect(typeof m[1].content).toBe('string')
   })
 })
