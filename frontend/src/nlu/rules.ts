@@ -256,21 +256,29 @@ function findTarget(tokens: Token[], mask: ReadonlySet<number> = new Set()): Tar
 
 const NO_FOCUS_SAY = '请先告诉我要操作哪个图形'
 
-/** 目标缺失时回退焦点；焦点为空 → clarify（明确的信息缺失，不升级 LLM，§4.2 第 4 条） */
-function targetOrFocus(
-  tokens: Token[],
-  cons: Consumption,
-  ctx: RuleContext,
-  limit?: number,
-): { ok: true; selector: TargetSelector } | { ok: false } {
+/**
+ * 目标槽位解析（§4.2）。三种结局：
+ * - ok：解析出选择器
+ * - escalate：出现了未解析的内容名词（如"头""耳朵"——可能是某个部件，但规则不认得它的全名），
+ *   **不要**回退 byFocus（在分组场景下会误伤整组），交给 LLM 用 scene.groups 精确映射
+ * - no-focus：目标完全缺失（"变大一点"）且无焦点 → clarify（信息缺失，LLM 也解决不了）
+ */
+type TargetOutcome =
+  | { ok: true; selector: TargetSelector }
+  | { ok: false; reason: 'escalate' | 'no-focus' }
+
+function targetOrFocus(tokens: Token[], cons: Consumption, ctx: RuleContext, limit?: number): TargetOutcome {
   const scope = limit === undefined ? tokens : tokens.slice(0, limit) // 前缀切片下标与原数组一致
   const m = findTarget(scope)
   if (m) {
     m.idxs.forEach((i) => cons.take(i))
     return { ok: true, selector: m.selector }
   }
+  // 目标槽位出现未消费的未知内容词（用户点名了某个东西，但规则不认得）→ 升级 LLM 而非 byFocus
+  const hasUnresolvedNoun = scope.some((t, i) => t.kind === 'unknown' && !cons.isUsed(i) && /[一-鿿]/.test(t.text))
+  if (hasUnresolvedNoun) return { ok: false, reason: 'escalate' }
   if (ctx.hasFocus) return { ok: true, selector: { byFocus: true } }
-  return { ok: false }
+  return { ok: false, reason: 'no-focus' }
 }
 
 // ---------- 模板匹配 ----------
@@ -428,7 +436,7 @@ const tMove: Template = (_text, tokens, cons, ctx) => {
   }
 
   const target = targetOrFocus(tokens, cons, ctx)
-  if (!target.ok) return 'clarify-no-focus'
+  if (!target.ok) return target.reason === 'escalate' ? null : 'clarify-no-focus'
   return {
     intent: 'ops',
     ops: [{ op: 'move', target: target.selector, delta: [vec[0] * px, vec[1] * px] }],
@@ -458,7 +466,7 @@ const tResize: Template = (text, tokens, cons, ctx) => {
     if ((t.kind === 'number' || t.kind === 'unknown') && scale.phrase.includes(t.text)) cons.take(i)
   })
   const target = targetOrFocus(tokens, cons, ctx)
-  if (!target.ok) return 'clarify-no-focus'
+  if (!target.ok) return target.reason === 'escalate' ? null : 'clarify-no-focus'
   return {
     intent: 'ops',
     ops: [{ op: 'resize', target: target.selector, scale: scale.factor }],
@@ -477,7 +485,7 @@ const tStyle: Template = (_text, tokens, cons, ctx) => {
   cons.take(colorIdx)
   cons.takeKinds('func')
   const target = targetOrFocus(tokens, cons, ctx, verbIdx)
-  if (!target.ok) return 'clarify-no-focus'
+  if (!target.ok) return target.reason === 'escalate' ? null : 'clarify-no-focus'
   return {
     intent: 'ops',
     ops: [{ op: 'style', target: target.selector, fill: (tokens[colorIdx] as ColorToken).hex }],
@@ -493,7 +501,7 @@ const tDelete: Template = (_text, tokens, cons, ctx) => {
   cons.take(verbIdx)
   cons.takeKinds('func')
   const target = targetOrFocus(tokens, cons, ctx)
-  if (!target.ok) return 'clarify-no-focus'
+  if (!target.ok) return target.reason === 'escalate' ? null : 'clarify-no-focus'
   return { intent: 'ops', ops: [{ op: 'delete', target: target.selector }], say: '删掉了', template: 'T5' }
 }
 
@@ -543,7 +551,7 @@ const tRotate: Template = (_text, tokens, cons, ctx) => {
     cons.take(rotIdx)
   }
   const target = targetOrFocus(tokens, cons, ctx)
-  if (!target.ok) return 'clarify-no-focus'
+  if (!target.ok) return target.reason === 'escalate' ? null : 'clarify-no-focus'
   const degrees = sign * (tokens[numIdx] as NumberToken).value
   return { intent: 'ops', ops: [{ op: 'rotate', target: target.selector, degrees }], say: '转好了', template: 'T8' }
 }

@@ -622,3 +622,39 @@ describe('v1.5 表达力扩展', () => {
     expect(sun.z).toBeLessThan(cloud.z)
   })
 })
+
+describe('焦点粒度 focusScope（§5.1 v1.1：byFocus 的组/部件二义性）', () => {
+  const cat = () =>
+    run([
+      { op: 'create', shape: 'circle', name: '头', at: { x: 400, y: 300 }, size: 80 },
+      { op: 'create', shape: 'circle', name: '左眼', at: { x: 380, y: 290 }, size: 8 },
+      { op: 'create', shape: 'circle', name: '右眼', at: { x: 420, y: 290 }, size: 8 },
+      { op: 'group', targets: [{ byName: '头' }, { byName: '左眼' }, { byName: '右眼' }], name: '猫' },
+    ]) // group op 置 focusScope=group（与 llm-plan autoGroup 同语义）
+
+  it('刚画完整组 → focusScope=group；byFocus 作用整组（"把它移走"）', () => {
+    const s0 = cat()
+    expect(s0.focusScope).toBe('group')
+    const s = run([{ op: 'move', target: { byFocus: true }, delta: [100, 0] }], s0)
+    expect(s.objects.find((o) => o.name === '头')!.x).toBe(500)
+    expect(s.objects.find((o) => o.name === '左眼')!.x).toBe(480) // 整组都动
+  })
+
+  it('编辑某部件后 focusScope=object；byFocus 只作用该部件（"它再大点"）', () => {
+    const s0 = cat()
+    const s1 = run([{ op: 'resize', target: { byName: '左眼' }, scale: 1.5 }], s0)
+    expect(s1.focusScope).toBe('object') // 编辑部件后粒度降为对象
+    const s2 = run([{ op: 'resize', target: { byFocus: true }, scale: 1.3 }], s1)
+    expect(s2.objects.find((o) => o.name === '左眼')!.radius).toBeCloseTo(8 * 1.5 * 1.3)
+    expect(s2.objects.find((o) => o.name === '头')!.radius).toBe(80) // 头不受影响
+    expect(s2.objects.find((o) => o.name === '右眼')!.radius).toBe(8) // 右眼不受影响
+  })
+
+  it('成员名几何操作仍只作用成员；组名仍作用整组（v1.1 不回归）', () => {
+    const s0 = cat()
+    const sMember = run([{ op: 'move', target: { byName: '左眼' }, delta: [50, 0] }], s0)
+    expect(sMember.objects.find((o) => o.name === '头')!.x).toBe(400) // 头不动
+    const sGroup = run([{ op: 'move', target: { byName: '猫' }, delta: [50, 0] }], s0)
+    expect(sGroup.objects.find((o) => o.name === '头')!.x).toBe(450) // 整组动
+  })
+})

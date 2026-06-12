@@ -118,7 +118,12 @@ function applyAutoGroup(base: SceneState, scene: SceneState, autoGroupName: stri
   let name = autoGroupName
   for (let i = 2; taken.has(name); i++) name = `${autoGroupName}${i}`
   const ids = new Set(created.map((o) => o.id))
-  return { ...scene, objects: scene.objects.map((o) => (ids.has(o.id) ? { ...o, groupId: name } : o)) }
+  // 刚画完整组 → 焦点粒度=组（"它"=整只猫；§5.1 v1.1）
+  return {
+    ...scene,
+    objects: scene.objects.map((o) => (ids.has(o.id) ? { ...o, groupId: name } : o)),
+    focusScope: 'group',
+  }
 }
 
 /**

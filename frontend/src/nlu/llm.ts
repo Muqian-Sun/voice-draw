@@ -20,11 +20,16 @@ export interface SceneSummary {
     shape: string
     fill?: string
     stroke?: string
+    center: [number, number] // 图形中心（与输出 at.x/y 同坐标系，免去从 bbox 角换算——尤其圆）
     bbox: [number, number, number, number]
     z: number
     groupId?: string
   }>
   focusId?: string
+  /** 人类可读焦点 + 粒度，让模型清楚"它"指什么、byFocus 会动什么（§5.1 v1.1） */
+  focus?: { name?: string; id: string; scope: 'group' | 'object' }
+  /** 组结构：组名 → 成员名清单。模型据此精确引用部件、避免误用组名/byFocus 动整组 */
+  groups?: Array<{ name: string; members: string[] }>
   lastTransaction?: { utterance: string; opCount: number }
   truncated?: true
 }
@@ -67,19 +72,43 @@ export function buildSceneSummary(
     )
     truncated = true
   }
+  // 组结构汇总（成员名清单），供模型精确引用部件
+  const groupMap = new Map<string, string[]>()
+  for (const o of objects) {
+    if (o.groupId === undefined) continue
+    const list = groupMap.get(o.groupId) ?? []
+    if (o.name !== undefined) list.push(o.name)
+    groupMap.set(o.groupId, list)
+  }
+  const groups = [...groupMap.entries()].map(([name, members]) => ({ name, members }))
+
+  const focusObj = scene.focusId !== undefined ? scene.objects.find((o) => o.id === scene.focusId) : undefined
+
   return {
     canvas: { width: 1024, height: 768 },
-    objects: objects.map((o) => ({
-      id: o.id,
-      ...(o.name !== undefined && { name: o.name }),
-      shape: o.shape,
-      ...(o.fill !== undefined && { fill: o.fill }),
-      ...(o.stroke !== undefined && { stroke: o.stroke }),
-      bbox: getBBox(o),
-      z: o.z,
-      ...(o.groupId !== undefined && { groupId: o.groupId }),
-    })),
-    ...(scene.focusId !== undefined && { focusId: scene.focusId }),
+    objects: objects.map((o) => {
+      const [bx, by, bw, bh] = getBBox(o)
+      return {
+        id: o.id,
+        ...(o.name !== undefined && { name: o.name }),
+        shape: o.shape,
+        ...(o.fill !== undefined && { fill: o.fill }),
+        ...(o.stroke !== undefined && { stroke: o.stroke }),
+        center: [Math.round(bx + bw / 2), Math.round(by + bh / 2)] as [number, number],
+        bbox: [bx, by, bw, bh] as [number, number, number, number],
+        z: o.z,
+        ...(o.groupId !== undefined && { groupId: o.groupId }),
+      }
+    }),
+    ...(scene.focusId !== undefined && {
+      focusId: scene.focusId,
+      focus: {
+        ...(focusObj?.name !== undefined && { name: focusObj.name }),
+        id: scene.focusId,
+        scope: scene.focusScope ?? 'object',
+      },
+    }),
+    ...(groups.length > 0 && { groups }),
     ...(lastTransaction !== undefined && { lastTransaction }),
     ...(truncated && { truncated: true as const }),
   }

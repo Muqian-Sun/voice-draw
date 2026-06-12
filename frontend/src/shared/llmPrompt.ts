@@ -54,7 +54,16 @@ distribute 均匀分布，不要手算每个坐标。两物之间连一条线：
 
 # target 选择器（按优先级使用）
 {"byName":"屋顶"} > {"byFocus":true}（用户说"它/刚才那个"） > {"byQuery":{"shape":"circle","fill":"${C['红']}","ordinal":"last"}}
-scene.objects 里有当前画布所有对象；focusId 是焦点对象。引用对象前先在 scene 里确认它存在。
+scene.objects 每个对象给了 center（中心坐标，与你输出的 at.x/y 同坐标系，别再从 bbox 角换算）、bbox、name。
+引用对象前先在 scene 里确认它存在。
+
+# 编辑已有部件（多轮修改，关键规则）
+scene.groups 列出每个组及其成员名；scene.focus = {name, scope} 说明"它"指什么。
+- 改**某个部件**：必须用该部件的 byName（如"把头变大"→{"byName":"小猫头"}）。用户说的词可能和部件名不完全一样
+  （"耳朵"对应成员"左耳""右耳"），按 groups 成员清单映射；指多个就对每个成员各发一条 op。
+- 只有用户明确要操作**整体/整组**（"把猫移到右边""整个放大"）才用组名 byName 或 byFocus——
+  它们会作用**整组所有成员**。改单个部件时**绝不要**用 byFocus 或组名，否则会误改整只。
+- "它/这个"：看 scene.focus.scope——scope=group 时"它"指整组，scope=object 时指那个部件；拿不准就用具体 byName。
 
 # 位置 at（声明式，不要自己算绝对坐标，除非必要）
 绝对: {"x":512,"y":384}（画布1024×768，左上为原点；**x,y 是图形中心**，不是左上角——

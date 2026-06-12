@@ -35,6 +35,13 @@ export interface SceneObject {
 export interface SceneState {
   objects: SceneObject[]
   focusId?: string
+  /**
+   * 焦点粒度（§5.1 v1.1）：决定 byFocus（"它"）作用范围。
+   * 'group'=最近动作针对整组（刚画完组合图/整组操作）→ "它"指整组；
+   * 'object'=最近动作针对单个对象（画了/编辑了某部件）→ "它"指该对象。
+   * 缺省按 object 处理。
+   */
+  focusScope?: 'group' | 'object'
   /** 全局创建计数（createdSeq 来源） */
   seq: number
   /** 按形状的 id 计数（id 命名来源，删除不回收） */

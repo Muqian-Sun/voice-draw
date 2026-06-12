@@ -163,3 +163,29 @@ describe('parseWithLlm（mock fetch：成功 / 校验失败重试）', () => {
     if (!r.ok) expect(r.error).toContain('ARK_API_KEY')
   })
 })
+
+describe('buildSceneSummary 上下文增强（§5.1 v1.1 多轮编辑）', () => {
+  it('每对象带 center（圆中心非 bbox 角）+ 组结构 + 可读焦点粒度', () => {
+    let s = createEmptyScene()
+    s = executeTransaction(s, [
+      { op: 'create', shape: 'circle', name: '头', at: { x: 400, y: 300 }, size: 80 },
+      { op: 'create', shape: 'circle', name: '左耳', at: { x: 360, y: 240 }, size: 20 },
+    ]).state
+    // 手工编组并置 group 粒度
+    s = executeTransaction(s, [{ op: 'group', targets: [{ byName: '头' }, { byName: '左耳' }], name: '猫' }]).state
+    const sum = buildSceneSummary(s, '把头变大')
+    const head = sum.objects.find((o) => o.name === '头')!
+    expect(head.center).toEqual([400, 300]) // 圆中心 = (x,y)，不是 bbox 角 (320,220)
+    expect(sum.groups).toEqual([{ name: '猫', members: ['头', '左耳'] }])
+    expect(sum.focus?.scope).toBe('group') // group op → 组粒度
+  })
+
+  it('编辑部件后焦点粒度降为 object', () => {
+    let s = createEmptyScene()
+    s = executeTransaction(s, [{ op: 'create', shape: 'circle', name: '头', at: { x: 400, y: 300 }, size: 80 }]).state
+    s = executeTransaction(s, [{ op: 'create', shape: 'circle', name: '眼', at: { x: 400, y: 290 }, size: 8 }]).state
+    s = executeTransaction(s, [{ op: 'group', targets: [{ byName: '头' }, { byName: '眼' }], name: '脸' }]).state
+    s = executeTransaction(s, [{ op: 'resize', target: { byName: '眼' }, scale: 2 }]).state
+    expect(buildSceneSummary(s, 'x').focus).toEqual({ name: '眼', id: s.focusId, scope: 'object' })
+  })
+})
