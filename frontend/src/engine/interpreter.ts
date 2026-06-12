@@ -10,7 +10,7 @@
  * executeTransaction 是纯函数：不修改入参，返回新 SceneState——
  * 这是快照式 undo 的前提。事务内逐 Op 执行，失败时保留已成功的 Op（协议 §1.5）。
  */
-import type { CreateOp, Op, Position, SizeSpec, TargetSelector } from '../dsl'
+import type { Anchor, CreateOp, Op, Position, SizeSpec, TargetSelector } from '../dsl'
 import { CANVAS_PADDING, DEFAULT_GAP, DEFAULT_STYLE, SEMANTIC_SIZE } from '../shared/lexicon'
 import {
   anchorPointOnBBox,
@@ -229,6 +229,43 @@ function buildGeometry(state: SceneState, op: CreateOp): GeometryResult {
   }
 }
 
+/** anchor → 单位方向向量（onEdge 用；center 视为缺省朝上） */
+const ANCHOR_DIR: Record<string, [number, number]> = {
+  left: [-1, 0],
+  right: [1, 0],
+  top: [0, -1],
+  bottom: [0, 1],
+  'top-left': [-Math.SQRT1_2, -Math.SQRT1_2],
+  'top-right': [Math.SQRT1_2, -Math.SQRT1_2],
+  'bottom-left': [-Math.SQRT1_2, Math.SQRT1_2],
+  'bottom-right': [Math.SQRT1_2, Math.SQRT1_2],
+  center: [0, -1],
+}
+
+/**
+ * 参照对象真实形状边缘上 anchor 方向的点（§5.3 v1.3 onEdge）。
+ * circle 圆周、ellipse 参数化、其余形状按 bbox 周界射线交点（三角/星形近似可接受）。
+ * gap 沿方向继续外移（负值向内），缺省 0。
+ */
+function edgeAnchorPoint(obj: SceneObject, anchor: Anchor, gap: number): Point {
+  const [ux, uy] = ANCHOR_DIR[anchor]
+  const c = getCenter(obj)
+  let t: number
+  if (obj.shape === 'circle') {
+    t = obj.radius ?? 0
+  } else if (obj.shape === 'ellipse') {
+    const rx = obj.radiusX ?? 1
+    const ry = obj.radiusY ?? 1
+    t = 1 / Math.sqrt((ux / rx) ** 2 + (uy / ry) ** 2)
+  } else {
+    const b = bboxOf(obj)
+    const tx = ux !== 0 ? b.w / 2 / Math.abs(ux) : Infinity
+    const ty = uy !== 0 ? b.h / 2 / Math.abs(uy) : Infinity
+    t = Math.min(tx, ty)
+  }
+  return { x: c.x + (t + gap) * ux, y: c.y + (t + gap) * uy }
+}
+
 /** 提取对象的几何字段子集（resize 缩放的作用域） */
 function pickGeometry(o: SceneObject): Partial<SceneObject> {
   const out: Partial<SceneObject> = {}
@@ -280,7 +317,13 @@ function resolvePosition(
   } else {
     const t = resolveTarget(state, at.ref)
     if (!t.ok) return t
-    if (lineAnchor !== undefined && !at.inside) {
+    if (at.onEdge) {
+      // v1.3 边缘贴附：锚点 = 参照真实形状边缘交点；线类钉首端点，其余钉中心（半叠=视觉贴附）
+      const a = edgeAnchorPoint(t.obj, at.anchor, at.gap ?? 0)
+      p = lineAnchor !== undefined
+        ? { x: a.x - lineAnchor.fp.x + lineAnchor.co.x, y: a.y - lineAnchor.fp.y + lineAnchor.co.y }
+        : a
+    } else if (lineAnchor !== undefined && !at.inside) {
       // v1.2：线类贴参照 bbox 锚点本身（端点贴合，gap 缺省 0），换算回 bbox 中心供 clamp
       const a = anchorPointOnBBox(bboxOf(t.obj), at.anchor, at.gap ?? 0)
       p = { x: a.x - lineAnchor.fp.x + lineAnchor.co.x, y: a.y - lineAnchor.fp.y + lineAnchor.co.y }
