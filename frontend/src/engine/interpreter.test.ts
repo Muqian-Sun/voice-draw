@@ -498,3 +498,42 @@ describe('line 首端点锚定（§5.3 v1.2）', () => {
     expect(arm.y + arm.points![1]).toBe(400)
   })
 })
+
+describe('onEdge 边缘贴附（§5.3 v1.3）', () => {
+  it('猫耳贴圆头：中心钉在圆周 top-left 方向交点（dist=半径）', () => {
+    const s = run([
+      { op: 'create', shape: 'circle', name: '头', at: { x: 400, y: 350 }, size: 100 },
+      { op: 'create', shape: 'triangle', name: '左耳', size: 30, at: { ref: { byName: '头' }, anchor: 'top-left', onEdge: true } },
+    ])
+    const ear = s.objects.find((o) => o.name === '左耳')!
+    const [bx, by, bw, bh] = [ear.x, ear.y, 0, 0]
+    const dist = Math.hypot(400 - bx, 350 - by + (ear.radius! - 0.75 * ear.radius!)) // 中心≈bbox中心
+    // 三角形 (x,y) 是外接圆心，bbox 中心略低；用 bbox 中心校验落点在圆周上
+    const cx = ear.x
+    const cy = ear.y - 0.25 * ear.radius!
+    expect(Math.hypot(cx - 400, cy - 350)).toBeCloseTo(100, 0)
+    void bw; void bh; void dist
+  })
+
+  it('矩形参照：right 方向钉在右边缘中点；gap 沿方向外移', () => {
+    const s = run([
+      { op: 'create', shape: 'rect', name: '车身', at: { x: 500, y: 400 }, width: 200, height: 100 },
+      { op: 'create', shape: 'circle', name: '轮', size: 20, at: { ref: { byName: '车身' }, anchor: 'bottom', onEdge: true } },
+      { op: 'create', shape: 'circle', name: '灯', size: 10, at: { ref: { byName: '车身' }, anchor: 'right', onEdge: true, gap: 5 } },
+    ])
+    const wheel = s.objects.find((o) => o.name === '轮')!
+    expect([Math.round(wheel.x), Math.round(wheel.y)]).toEqual([500, 450]) // 底边中点
+    const light = s.objects.find((o) => o.name === '灯')!
+    expect([Math.round(light.x), Math.round(light.y)]).toEqual([605, 400]) // 右缘+gap5
+  })
+
+  it('move.to 同样支持 onEdge（把耳朵贴回头上）', () => {
+    const s0 = run([
+      { op: 'create', shape: 'circle', name: '头', at: { x: 400, y: 350 }, size: 100 },
+      { op: 'create', shape: 'circle', name: '耳', size: 25, at: { x: 100, y: 100 } },
+    ])
+    const s = run([{ op: 'move', target: { byName: '耳' }, to: { ref: { byName: '头' }, anchor: 'top-right', onEdge: true } }], s0)
+    const ear = s.objects.find((o) => o.name === '耳')!
+    expect(Math.hypot(ear.x - 400, ear.y - 350)).toBeCloseTo(100, 0) // 圆心距=半径，半叠贴附
+  })
+})

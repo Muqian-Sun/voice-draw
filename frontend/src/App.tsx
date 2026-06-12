@@ -20,7 +20,8 @@ let logSeq = 0
 const CRITIQUE_INSTRUCTION =
   '这是当前画布的渲染截图与场景 JSON。请对照检查视觉缺陷：部件错位/悬空/朝向错误/比例失调/不当遮挡。' +
   '发现缺陷则输出修正 ops（byName/byId 引用现有对象）。修正位置**必须**用相对定位' +
-  '（move.to 的 ref+anchor+offset/inside，参照 scene JSON 里的真实对象），' +
+  '（move.to 的 ref+anchor+offset/inside，参照 scene JSON 里的真实对象；' +
+  '修"部件悬空/没贴上"优先用 "onEdge":true——中心钉到参照真实形状边缘），' +
   '禁止自己估算绝对 x,y——你的像素估读不可靠；' +
   "画面没有明显缺陷则 intent:'reject' 且 say:'画面看起来没问题'。"
 

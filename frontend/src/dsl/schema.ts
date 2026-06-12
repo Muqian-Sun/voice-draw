@@ -84,6 +84,9 @@ export const positionSchema = z.union([
       gap: z.number().optional(),
       // ref 为对象时内贴（"门在房子底边"，协议 §1.3 v1.1）；ref=canvas 恒内贴，此字段无效
       inside: z.literal(true).optional(),
+      // 边缘贴附（协议 §1.3 v1.3）：中心钉在参照真实形状边缘的 anchor 方向交点
+      // （圆按圆周、椭圆按参数化、矩形按周界，bbox 锚定对曲线形状的斜向方位天然失效）
+      onEdge: z.literal(true).optional(),
     })
     .strict(),
 ])
