@@ -268,6 +268,48 @@ export default function App() {
         }
       }
 
+      // 视觉自检（"检查一下画面"）：截图喂多模态 LLM，产出修正 Op（按需多模态，仅此处附图）
+      if (/(检查|看看|自检).*(画面|画布)|^自检$/.test(utterance)) {
+        if (historyRef.current.scene.objects.length === 0) {
+          advance(false)
+          say('画布是空的，没什么可检查')
+          return
+        }
+        pushLog('info', '视觉自检：截图 → 多模态 LLM 质检中…')
+        void (async () => {
+          const stage = stageRef.current
+          const overlay = stage?.findOne<Konva.Layer>('.overlay')
+          overlay?.visible(false)
+          const image = stage?.toDataURL({ pixelRatio: 0.75 }) ?? ''
+          overlay?.visible(true)
+          const llm = await parseWithLlm(
+            '这是当前画布的渲染截图与场景 JSON。请对照检查视觉缺陷：部件错位/悬空/朝向错误/比例失调/不当遮挡。' +
+              '发现缺陷则输出修正 ops（byName/byId 引用现有对象）。修正位置**必须**用相对定位' +
+              '（move.to 的 ref+anchor+offset/inside，参照 scene JSON 里的真实对象），' +
+              '禁止自己估算绝对 x,y——你的像素估读不可靠；' +
+              "画面没有明显缺陷则 intent:'reject' 且 say:'画面看起来没问题'。",
+            'parse',
+            { scene: historyRef.current.scene, image },
+          )
+          if (!llm.ok) {
+            pushLog('error', `自检失败：${llm.error}`)
+            advance(false)
+            say('自检没成功，请再试一次')
+            return
+          }
+          const res = llm.result
+          pushLog('info', `自检返回 ${res.source}（${res.latencyMs.toFixed(0)}ms，confidence ${res.confidence.toFixed(2)}）`)
+          if (res.intent !== 'ops') {
+            advance(false)
+            say(res.say ?? '画面看起来没问题')
+            return
+          }
+          advance(true)
+          speakOutcome(execOps(res.ops), res.say ?? '修正好了', res.ops)
+        })()
+        return
+      }
+
       // 投机缓存的规则结果仅在话语未被澄清联合改写时可复用
       const specReused = spec !== null && utterance === spec.corrected
       const r = specReused ? spec.rule : parseRule(utterance, ruleCtx())
