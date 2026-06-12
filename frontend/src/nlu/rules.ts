@@ -655,10 +655,12 @@ export function decideMode(utterance: string): 'parse' | 'plan' {
   const tokens = tokenize(utterance)
   const createVerbs = tokens.filter((t) => t.kind === 'verb' && t.intent === 'create').length
   const hasShape = tokens.some((t) => t.kind === 'shape')
-  // 动词"画"+ 非词表具体名词（雪人/房子/树…）→ plan
+  // 动词"画"+ 非词表具体名词（雪人/房子/树…）→ plan。
+  // 阈值 ≥1：尺寸词会吞名词首字（"画一只小猫"的"小"是 size token，剩"猫"1 字），
+  // 而"画 + 无形状词 + 有内容词"本就该创作拆解
   if (createVerbs > 0 && !hasShape) {
     const unknownChars = tokens.filter((t) => t.kind === 'unknown').reduce((n, t) => n + t.text.length, 0)
-    if (unknownChars >= 2) return 'plan'
+    if (unknownChars >= 1) return 'plan'
   }
   // 2 个以上连接词串联的创建动作 → plan
   const connectors = utterance.match(CONNECTOR_RE)?.length ?? 0
