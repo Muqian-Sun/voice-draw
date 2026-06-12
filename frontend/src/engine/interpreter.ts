@@ -12,7 +12,16 @@
  */
 import type { CreateOp, Op, Position, SizeSpec, TargetSelector } from '../dsl'
 import { CANVAS_PADDING, DEFAULT_GAP, DEFAULT_STYLE, SEMANTIC_SIZE } from '../shared/lexicon'
-import { autoPlace, clampCenter, placeInside, placeInsideBBox, placeOutside, type BBox, type Point } from './layout'
+import {
+  anchorPointOnBBox,
+  autoPlace,
+  clampCenter,
+  placeInside,
+  placeInsideBBox,
+  placeOutside,
+  type BBox,
+  type Point,
+} from './layout'
 import type { SceneObject, SceneState } from './scene'
 import { getBBox, getCenter } from './scene'
 
@@ -233,7 +242,20 @@ function scaleGeometry(geo: Partial<SceneObject>, s: number): Partial<SceneObjec
 type PositionResult = { ok: true; point: Point } | { ok: false; error: EngineError }
 
 /** 解析 Position 为目标中心点（w/h 为待放置对象的 bbox 尺寸） */
-function resolvePosition(state: SceneState, at: Position | undefined, w: number, h: number, focus?: SceneObject): PositionResult {
+/** line/polyline 首端点锚定（§5.3 v1.2）：fp=points 首点相对锚点偏移，co=bbox 中心相对锚点偏移 */
+interface LineAnchor {
+  fp: Point
+  co: Point
+}
+
+function resolvePosition(
+  state: SceneState,
+  at: Position | undefined,
+  w: number,
+  h: number,
+  focus?: SceneObject,
+  lineAnchor?: LineAnchor,
+): PositionResult {
   if (at === undefined) {
     // §5.2 自动布局
     return { ok: true, point: autoPlace(state.objects.map(bboxOf), focus && bboxOf(focus), w, h) }
@@ -246,9 +268,15 @@ function resolvePosition(state: SceneState, at: Position | undefined, w: number,
   } else {
     const t = resolveTarget(state, at.ref)
     if (!t.ok) return t
-    p = at.inside
-      ? placeInsideBBox(bboxOf(t.obj), w, h, at.anchor, at.gap ?? 0) // 对象内贴（v1.1）：gap 作内边距，缺省贴齐
-      : placeOutside(bboxOf(t.obj), w, h, at.anchor, at.gap ?? DEFAULT_GAP)
+    if (lineAnchor !== undefined && !at.inside) {
+      // v1.2：线类贴参照 bbox 锚点本身（端点贴合，gap 缺省 0），换算回 bbox 中心供 clamp
+      const a = anchorPointOnBBox(bboxOf(t.obj), at.anchor, at.gap ?? 0)
+      p = { x: a.x - lineAnchor.fp.x + lineAnchor.co.x, y: a.y - lineAnchor.fp.y + lineAnchor.co.y }
+    } else {
+      p = at.inside
+        ? placeInsideBBox(bboxOf(t.obj), w, h, at.anchor, at.gap ?? 0) // 对象内贴（v1.1）：gap 作内边距，缺省贴齐
+        : placeOutside(bboxOf(t.obj), w, h, at.anchor, at.gap ?? DEFAULT_GAP)
+    }
   }
   if (at.offset) p = { x: p.x + at.offset[0], y: p.y + at.offset[1] }
   return { ok: true, point: p }
@@ -272,7 +300,13 @@ function execCreate(state: SceneState, op: CreateOp): OpResult {
   const centerOffset = { x: bx + bw / 2, y: by + bh / 2 }
 
   const focus = state.focusId ? state.objects.find((o) => o.id === state.focusId) : undefined
-  const pos = resolvePosition(state, op.at, bw, bh, focus)
+  // line/polyline 显式 points 时相对定位锚定首端点（§5.3 v1.2）："手臂长在身体上"类
+  // 连接部件端点贴合；引擎默认生成的横/竖线（无显式 points）维持 bbox 外贴语义
+  const lineAnchor =
+    LINE_SHAPES.has(op.shape) && op.points !== undefined && probe.points !== undefined && probe.points.length >= 2
+      ? { fp: { x: probe.points[0], y: probe.points[1] }, co: centerOffset }
+      : undefined
+  const pos = resolvePosition(state, op.at, bw, bh, focus, lineAnchor)
   if (!pos.ok) return pos
 
   // §5.5 clamp
@@ -355,8 +389,15 @@ function execOp(state: SceneState, op: Op): OpResult {
         desired = { x: cur.x + op.delta[0], y: cur.y + op.delta[1] }
       } else {
         const to = op.to!
-        // move.to 解析与 create.at 一致（目标（组）bbox 尺寸参与外贴/内贴计算）
-        const pos = resolvePosition(state, to, b.w, b.h)
+        // move.to 解析与 create.at 一致（目标（组）bbox 尺寸参与外贴/内贴计算）；单线对象同样端点贴合
+        const la =
+          members.length === 1 && LINE_SHAPES.has(t.obj.shape) && t.obj.points !== undefined && t.obj.points.length >= 2
+            ? {
+                fp: { x: t.obj.points[0], y: t.obj.points[1] },
+                co: { x: b.x + b.w / 2 - t.obj.x, y: b.y + b.h / 2 - t.obj.y },
+              }
+            : undefined
+        const pos = resolvePosition(state, to, b.w, b.h, undefined, la)
         if (!pos.ok) return pos
         desired = pos.point
       }

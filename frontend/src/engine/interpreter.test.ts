@@ -456,3 +456,37 @@ describe('对象内贴 inside（§5.3 v1.1）', () => {
     expect(door.y + 40).toBe(house.y + 90)
   })
 })
+
+describe('line 首端点锚定（§5.3 v1.2）', () => {
+  it('手臂长在身体上：显式 points 的线，首端点贴参照 bbox 锚点（gap 缺省 0）', () => {
+    const s = run([
+      { op: 'create', shape: 'circle', name: '身体', at: { x: 500, y: 400 }, size: 100 },
+      { op: 'create', shape: 'line', name: '左臂', at: { ref: { byName: '身体' }, anchor: 'left' }, points: [[0, 0], [-70, -40]] },
+    ])
+    const arm = s.objects.find((o) => o.name === '左臂')!
+    // 首端点 = (arm.x + points[0], arm.y + points[1]) 应落在身体 bbox 左缘垂直中点 (400, 400)
+    expect(arm.x + arm.points![0]).toBe(400)
+    expect(arm.y + arm.points![1]).toBe(400)
+  })
+
+  it('无显式 points 的横线维持 bbox 外贴（既有语义不变）', () => {
+    const s = run([
+      { op: 'create', shape: 'circle', name: '身体', at: { x: 500, y: 400 }, size: 100 },
+      { op: 'create', shape: 'line', name: '横线', at: { ref: { byName: '身体' }, anchor: 'right' } },
+    ])
+    const line = s.objects.find((o) => o.name === '横线')!
+    // 默认长 3v=240，bbox 左缘 = 身体右缘 + gap 20 → 600+20=620；线中心 x = 620+120
+    expect(line.x).toBe(740)
+  })
+
+  it('move.to 对显式 points 线同样端点贴合', () => {
+    const s0 = run([
+      { op: 'create', shape: 'circle', name: '身体', at: { x: 500, y: 400 }, size: 100 },
+      { op: 'create', shape: 'line', name: '臂', at: { x: 100, y: 100 }, points: [[0, 0], [70, -40]] },
+    ])
+    const s = run([{ op: 'move', target: { byName: '臂' }, to: { ref: { byName: '身体' }, anchor: 'right' } }], s0)
+    const arm = s.objects.find((o) => o.name === '臂')!
+    expect(arm.x + arm.points![0]).toBe(600)
+    expect(arm.y + arm.points![1]).toBe(400)
+  })
+})

@@ -90,6 +90,37 @@ export function placeInside(w: number, h: number, anchor: Anchor, pad: number): 
   return placeInsideBBox({ x: 0, y: 0, w: CANVAS_WIDTH, h: CANVAS_HEIGHT }, w, h, anchor, pad)
 }
 
+/**
+ * §5.3 v1.2：参照 bbox 上的锚点本身（line/polyline 首端点贴合用）。
+ * gap 沿 anchor 方向向外偏移；center 即 bbox 中心。
+ */
+export function anchorPointOnBBox(ref: BBox, anchor: Anchor, gap: number): Point {
+  const L = ref.x - gap
+  const R = ref.x + ref.w + gap
+  const T = ref.y - gap
+  const B = ref.y + ref.h + gap
+  switch (anchor) {
+    case 'center':
+      return { x: centerX(ref), y: centerY(ref) }
+    case 'left':
+      return { x: L, y: centerY(ref) }
+    case 'right':
+      return { x: R, y: centerY(ref) }
+    case 'top':
+      return { x: centerX(ref), y: T }
+    case 'bottom':
+      return { x: centerX(ref), y: B }
+    case 'top-left':
+      return { x: L, y: T }
+    case 'top-right':
+      return { x: R, y: T }
+    case 'bottom-left':
+      return { x: L, y: B }
+    case 'bottom-right':
+      return { x: R, y: B }
+  }
+}
+
 export interface ClampResult extends Point {
   clamped: boolean
   /** 对象大于画布平移无解时的等比缩小系数（§5.5：缩至画布 90% 后居中） */
