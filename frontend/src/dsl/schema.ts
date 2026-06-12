@@ -76,6 +76,14 @@ export type TargetSelector = z.infer<typeof targetSelectorSchema>
 
 export const positionSchema = z.union([
   z.object({ x: z.number(), y: z.number() }).strict(),
+  // v1.5：两参照中心的插值点（"在头和身体之间"），t 缺省 0.5（中点）
+  z
+    .object({
+      between: z.tuple([targetSelectorSchema, targetSelectorSchema]),
+      t: z.number().min(0).max(1).optional(),
+      offset: vec2Schema.optional(),
+    })
+    .strict(),
   z
     .object({
       ref: z.union([z.literal('canvas'), targetSelectorSchema]),
@@ -117,6 +125,9 @@ const createOpSchema = z
     width: sizeSpecSchema.optional(), // 显式宽高优先于 size
     height: sizeSpecSchema.optional(),
     points: z.array(vec2Schema).min(2).optional(), // line/polyline/path 用
+    // v1.5 连接线（仅 line）：端点各自贴到 from/to 对象的真实边缘（朝向彼此），与 points/at 互斥
+    from: targetSelectorSchema.optional(),
+    to: targetSelectorSchema.optional(),
     text: z.string().optional(),
     fontSize: z.number().positive().optional(),
     fill: colorSchema.optional(),
@@ -212,7 +223,12 @@ const zorderOpSchema = z
   .object({
     op: z.literal('zorder'),
     target: targetSelectorSchema,
-    to: z.enum(['front', 'back', 'forward', 'backward']),
+    // v1.5：相对层级（"把太阳放到云后面"= {below:{byName:"云"}}）
+    to: z.union([
+      z.enum(['front', 'back', 'forward', 'backward']),
+      z.object({ above: targetSelectorSchema }).strict(),
+      z.object({ below: targetSelectorSchema }).strict(),
+    ]),
   })
   .strict()
 
@@ -243,6 +259,38 @@ const focusOpSchema = z
   })
   .strict()
 
+// v1.5：镜像复制（对称部件首选——右耳=左耳关于头的镜像，引擎精确对称，LLM 手算 offset 易错）
+const mirrorOpSchema = z
+  .object({
+    op: z.literal('mirror'),
+    target: targetSelectorSchema,
+    /** 镜像轴所在参照（取其中心轴）；如左右耳关于"头" */
+    about: targetSelectorSchema,
+    /** vertical=左右镜像（缺省）；horizontal=上下镜像 */
+    axis: z.enum(['vertical', 'horizontal']).optional(),
+    name: z.string().min(1).optional(),
+    desc: z.string().optional(),
+  })
+  .strict()
+
+// v1.5：中心对齐（axis='x' 时各对象中心 x 对齐到首个目标）
+const alignOpSchema = z
+  .object({
+    op: z.literal('align'),
+    targets: z.array(targetSelectorSchema).min(2),
+    axis: z.enum(['x', 'y']),
+  })
+  .strict()
+
+// v1.5：等距分布（首尾不动，中间对象沿 axis 平均分布）
+const distributeOpSchema = z
+  .object({
+    op: z.literal('distribute'),
+    targets: z.array(targetSelectorSchema).min(3),
+    axis: z.enum(['x', 'y']),
+  })
+  .strict()
+
 const exportOpSchema = z
   .object({
     op: z.literal('export'),
@@ -263,6 +311,9 @@ export const opSchema = z
     groupOpSchema,
     ungroupOpSchema,
     zorderOpSchema,
+    mirrorOpSchema,
+    alignOpSchema,
+    distributeOpSchema,
     undoOpSchema,
     redoOpSchema,
     clearOpSchema,
@@ -274,6 +325,14 @@ export const opSchema = z
       case 'create':
         if (op.shape === 'text' && !op.text) {
           ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'text 图形必须提供 text 内容', path: ['text'] })
+        }
+        if ((op.from === undefined) !== (op.to === undefined)) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: '连接线 from/to 必须成对出现' })
+        }
+        if (op.from !== undefined) {
+          if (op.shape !== 'line') ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'from/to 仅用于 line' })
+          if (op.points !== undefined || op.at !== undefined)
+            ctx.addIssue({ code: z.ZodIssueCode.custom, message: '连接线与 points/at 互斥' })
         }
         if ((op.shape === 'polyline' || op.shape === 'path') && !op.points) {
           ctx.addIssue({ code: z.ZodIssueCode.custom, message: `${op.shape} 必须提供 points`, path: ['points'] })

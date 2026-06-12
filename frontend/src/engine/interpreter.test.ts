@@ -539,3 +539,86 @@ describe('onEdge 边缘贴附（§5.3 v1.3）', () => {
     expect(Math.hypot(ear.x - 400, ear.y - 350)).toBeCloseTo(100 + (25 * Math.SQRT2) / 3, 0) // 半径 + 对角向 halfExt/3
   })
 })
+
+describe('v1.5 表达力扩展', () => {
+  it('mirror：右耳 = 左耳关于头的左右镜像（位置精确对称）', () => {
+    const s = run([
+      { op: 'create', shape: 'circle', name: '头', at: { x: 400, y: 300 }, size: 100 },
+      { op: 'create', shape: 'triangle', name: '左耳', size: 30, at: { ref: { byName: '头' }, anchor: 'top-left', onEdge: true } },
+      { op: 'mirror', target: { byName: '左耳' }, about: { byName: '头' }, name: '右耳' },
+    ])
+    const head = s.objects.find((o) => o.name === '头')!
+    const earL = s.objects.find((o) => o.name === '左耳')!
+    const earR = s.objects.find((o) => o.name === '右耳')!
+    expect(earR.name).toBe('右耳')
+    expect(earR.y).toBe(earL.y) // 同高
+    expect(earR.x - head.x).toBeCloseTo(head.x - earL.x) // 关于头中心 x 对称
+  })
+
+  it('mirror horizontal：上下镜像翻 y', () => {
+    const s = run([
+      { op: 'create', shape: 'circle', name: '身体', at: { x: 400, y: 400 }, size: 100 },
+      { op: 'create', shape: 'circle', name: '上点', at: { x: 400, y: 300 }, size: 10 },
+      { op: 'mirror', target: { byName: '上点' }, about: { byName: '身体' }, axis: 'horizontal' },
+    ])
+    const m = s.objects.find((o) => o.name === '上点-镜像')!
+    expect(m.x).toBe(400)
+    expect(m.y).toBe(500) // 400 关于 y=400 镜像
+  })
+
+  it('between：脖子落在头和身体中点；t 可调', () => {
+    const s = run([
+      { op: 'create', shape: 'circle', name: '头', at: { x: 400, y: 300 }, size: 50 },
+      { op: 'create', shape: 'circle', name: '身体', at: { x: 400, y: 500 }, size: 80 },
+      { op: 'create', shape: 'rect', name: '脖子', at: { between: [{ byName: '头' }, { byName: '身体' }] }, width: 30, height: 40 },
+    ])
+    const neck = s.objects.find((o) => o.name === '脖子')!
+    expect([neck.x, neck.y]).toEqual([400, 400]) // 中点
+  })
+
+  it('align x：三个对象中心 x 对齐到首个', () => {
+    const s = run([
+      { op: 'create', shape: 'circle', name: 'a', at: { x: 300, y: 100 }, size: 10 },
+      { op: 'create', shape: 'circle', name: 'b', at: { x: 500, y: 200 }, size: 10 },
+      { op: 'create', shape: 'circle', name: 'c', at: { x: 700, y: 300 }, size: 10 },
+      { op: 'align', targets: [{ byName: 'a' }, { byName: 'b' }, { byName: 'c' }], axis: 'x' },
+    ])
+    expect(s.objects.filter((o) => ['a', 'b', 'c'].includes(o.name!)).map((o) => o.x)).toEqual([300, 300, 300])
+  })
+
+  it('distribute y：首尾不动，中间等距', () => {
+    const s = run([
+      { op: 'create', shape: 'circle', name: 'a', at: { x: 400, y: 100 }, size: 10 },
+      { op: 'create', shape: 'circle', name: 'b', at: { x: 400, y: 150 }, size: 10 },
+      { op: 'create', shape: 'circle', name: 'c', at: { x: 400, y: 500 }, size: 10 },
+      { op: 'distribute', targets: [{ byName: 'a' }, { byName: 'b' }, { byName: 'c' }], axis: 'y' },
+    ])
+    const ys = ['a', 'b', 'c'].map((n) => s.objects.find((o) => o.name === n)!.y)
+    expect(ys).toEqual([100, 300, 500]) // b 移到中点
+  })
+
+  it('连接线 from/to：line 端点贴双方真实边缘', () => {
+    const s = run([
+      { op: 'create', shape: 'circle', name: '左', at: { x: 200, y: 300 }, size: 50 },
+      { op: 'create', shape: 'circle', name: '右', at: { x: 600, y: 300 }, size: 50 },
+      { op: 'create', shape: 'line', name: '连线', from: { byName: '左' }, to: { byName: '右' } },
+    ])
+    const line = s.objects.find((o) => o.name === '连线')!
+    const p1 = { x: line.x + line.points![0], y: line.y + line.points![1] }
+    const p2 = { x: line.x + line.points![2], y: line.y + line.points![3] }
+    expect(p1.x).toBeCloseTo(250) // 左圆右缘 200+50
+    expect(p2.x).toBeCloseTo(550) // 右圆左缘 600-50
+    expect(p1.y).toBeCloseTo(300)
+  })
+
+  it('zorder 相对：把太阳放到云后面（z 落在云之下）', () => {
+    const s0 = run([
+      { op: 'create', shape: 'circle', name: '太阳', at: { x: 300, y: 200 }, size: 40 },
+      { op: 'create', shape: 'circle', name: '云', at: { x: 320, y: 210 }, size: 50 },
+    ])
+    const s = run([{ op: 'zorder', target: { byName: '太阳' }, to: { below: { byName: '云' } } }], s0)
+    const sun = s.objects.find((o) => o.name === '太阳')!
+    const cloud = s.objects.find((o) => o.name === '云')!
+    expect(sun.z).toBeLessThan(cloud.z)
+  })
+})
