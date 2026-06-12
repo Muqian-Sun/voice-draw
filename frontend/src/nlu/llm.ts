@@ -217,6 +217,83 @@ async function callBackend(
   return { ok: true, content: body.content }
 }
 
+/**
+ * 流式解析（协议 v1.4 渐进绘制）：边收 LLM 增量边提取完整 Op，逐个回调 onOp
+ * （已过 Op 级 zod + 本地操作禁单；仅 intent=ops 且 confidence 达标才回调）。
+ * 流结束后用完整文本做权威校验：通过即返回结果（ops 已在回调中交付，调用方
+ * 不应重复执行）；失败返回错误——调用方回滚画布后退回缓冲模式（含重试）。
+ */
+export async function parseWithLlmStream(
+  utterance: string,
+  mode: 'parse' | 'plan',
+  ctx: LlmCallContext,
+  onOp: (op: Op) => void,
+): Promise<LlmParseOutcome & { painted: number }> {
+  const t0 = performance.now()
+  const fetchFn = ctx.fetchFn ?? fetch
+  const baseUrl = ctx.baseUrl ?? `http://${location.hostname}:8787`
+  const payload: Record<string, unknown> = {
+    utterance,
+    mode,
+    stream: true,
+    scene: buildSceneSummary(ctx.scene, utterance, ctx.lastTransaction),
+    ...(ctx.asrAlternatives !== undefined && ctx.asrAlternatives.length > 0 && { asr_alternatives: ctx.asrAlternatives }),
+    ...(ctx.recent !== undefined && ctx.recent.length > 0 && { recent: ctx.recent }),
+    ...(ctx.image !== undefined && { image: ctx.image }),
+  }
+
+  let res: Response
+  try {
+    res = await fetchFn(`${baseUrl}/api/llm/parse`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+  } catch (e) {
+    return { ok: false, error: `backend 不可达：${(e as Error).message}`, painted: 0 }
+  }
+  if (!res.ok || res.body === null) {
+    const body = (await res.json().catch(() => null)) as { message?: string } | null
+    return { ok: false, error: body?.message ?? `backend ${res.status}`, painted: 0 }
+  }
+
+  const { OpStreamExtractor } = await import('./streamOps')
+  const ex = new OpStreamExtractor()
+  let painted = 0
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    for (const raw of ex.feed(decoder.decode(value, { stream: true }))) {
+      // 渐进绘制门槛：明确 intent=ops 且置信度达标（字段顺序由 System Prompt 约定在 ops 之前）
+      if (ex.head.intent !== 'ops') continue
+      if (ex.head.confidence !== undefined && ex.head.confidence < 0.6) continue
+      const r = opSchema.safeParse(raw)
+      if (!r.success) continue // 单 Op 非法不上屏，整体校验兜底
+      if (r.data.op === 'clear' || r.data.op === 'undo' || r.data.op === 'redo' || r.data.op === 'export') continue
+      onOp(r.data)
+      painted++
+    }
+  }
+
+  const v = validateLlmOutput(ex.fullText(), mode)
+  if (!v.ok) return { ok: false, error: `流式输出未通过校验：${v.error}`, painted }
+  if (v.result.intent === 'ops' && painted !== v.result.ops.length) {
+    // 渐进交付与终验清单不一致（极端乱序/字段后置），按失败处理走回滚+缓冲重试
+    return { ok: false, error: `渐进交付不完整（${painted}/${v.result.ops.length}）`, painted }
+  }
+  return {
+    ok: true,
+    painted,
+    result: {
+      source: mode === 'plan' ? 'llm-plan' : 'llm-parse',
+      ...v.result,
+      latencyMs: performance.now() - t0,
+    },
+  }
+}
+
 export async function parseWithLlm(
   utterance: string,
   mode: 'parse' | 'plan',
