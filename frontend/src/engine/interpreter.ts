@@ -318,11 +318,18 @@ function resolvePosition(
     const t = resolveTarget(state, at.ref)
     if (!t.ok) return t
     if (at.onEdge) {
-      // v1.3 边缘贴附：锚点 = 参照真实形状边缘交点；线类钉首端点，其余钉中心（半叠=视觉贴附）
+      // v1.3.1 边缘贴附：锚点 = 参照真实形状边缘交点。线类钉首端点；
+      // 其余部件"骑"在边上——沿 anchor 方向 1/3 咬合、2/3 外露
+      // （v1.3 初版钉中心 = 半埋，实测耳朵"长进头里"、脚"陷进身体"）
       const a = edgeAnchorPoint(t.obj, at.anchor, at.gap ?? 0)
-      p = lineAnchor !== undefined
-        ? { x: a.x - lineAnchor.fp.x + lineAnchor.co.x, y: a.y - lineAnchor.fp.y + lineAnchor.co.y }
-        : a
+      if (lineAnchor !== undefined) {
+        p = { x: a.x - lineAnchor.fp.x + lineAnchor.co.x, y: a.y - lineAnchor.fp.y + lineAnchor.co.y }
+      } else {
+        const [ux, uy] = ANCHOR_DIR[at.anchor]
+        const halfExt = (w / 2) * Math.abs(ux) + (h / 2) * Math.abs(uy)
+        const d = halfExt / 3 // 中心外移量：埋入 2/3·halfExt = 整体的 1/3
+        p = { x: a.x + d * ux, y: a.y + d * uy }
+      }
     } else if (lineAnchor !== undefined && !at.inside) {
       // v1.2：线类贴参照 bbox 锚点本身（端点贴合，gap 缺省 0），换算回 bbox 中心供 clamp
       const a = anchorPointOnBBox(bboxOf(t.obj), at.anchor, at.gap ?? 0)

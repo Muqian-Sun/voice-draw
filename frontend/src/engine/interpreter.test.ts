@@ -506,13 +506,13 @@ describe('onEdge 边缘贴附（§5.3 v1.3）', () => {
       { op: 'create', shape: 'triangle', name: '左耳', size: 30, at: { ref: { byName: '头' }, anchor: 'top-left', onEdge: true } },
     ])
     const ear = s.objects.find((o) => o.name === '左耳')!
-    const [bx, by, bw, bh] = [ear.x, ear.y, 0, 0]
-    const dist = Math.hypot(400 - bx, 350 - by + (ear.radius! - 0.75 * ear.radius!)) // 中心≈bbox中心
-    // 三角形 (x,y) 是外接圆心，bbox 中心略低；用 bbox 中心校验落点在圆周上
+    // 三角形 (x,y) 是外接圆心，bbox 中心略低；bbox 中心应在圆周外 halfExt/3 处（1/3 咬合）
     const cx = ear.x
     const cy = ear.y - 0.25 * ear.radius!
-    expect(Math.hypot(cx - 400, cy - 350)).toBeCloseTo(100, 0)
-    void bw; void bh; void dist
+    const w = Math.sqrt(3) * ear.radius!
+    const h = 1.5 * ear.radius!
+    const halfExt = (w / 2) * Math.SQRT1_2 + (h / 2) * Math.SQRT1_2
+    expect(Math.hypot(cx - 400, cy - 350)).toBeCloseTo(100 + halfExt / 3, 0)
   })
 
   it('矩形参照：right 方向钉在右边缘中点；gap 沿方向外移', () => {
@@ -522,9 +522,11 @@ describe('onEdge 边缘贴附（§5.3 v1.3）', () => {
       { op: 'create', shape: 'circle', name: '灯', size: 10, at: { ref: { byName: '车身' }, anchor: 'right', onEdge: true, gap: 5 } },
     ])
     const wheel = s.objects.find((o) => o.name === '轮')!
-    expect([Math.round(wheel.x), Math.round(wheel.y)]).toEqual([500, 450]) // 底边中点
+    expect(wheel.x).toBe(500)
+    expect(wheel.y).toBeCloseTo(450 + 20 / 3, 1) // 底边中点外移 r/3（1/3 咬合）
     const light = s.objects.find((o) => o.name === '灯')!
-    expect([Math.round(light.x), Math.round(light.y)]).toEqual([605, 400]) // 右缘+gap5
+    expect(light.x).toBeCloseTo(605 + 10 / 3, 1) // 右缘 + gap5 + r/3
+    expect(light.y).toBe(400)
   })
 
   it('move.to 同样支持 onEdge（把耳朵贴回头上）', () => {
@@ -534,6 +536,6 @@ describe('onEdge 边缘贴附（§5.3 v1.3）', () => {
     ])
     const s = run([{ op: 'move', target: { byName: '耳' }, to: { ref: { byName: '头' }, anchor: 'top-right', onEdge: true } }], s0)
     const ear = s.objects.find((o) => o.name === '耳')!
-    expect(Math.hypot(ear.x - 400, ear.y - 350)).toBeCloseTo(100, 0) // 圆心距=半径，半叠贴附
+    expect(Math.hypot(ear.x - 400, ear.y - 350)).toBeCloseTo(100 + (25 * Math.SQRT2) / 3, 0) // 半径 + 对角向 halfExt/3
   })
 })
