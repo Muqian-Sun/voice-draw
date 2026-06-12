@@ -24,6 +24,7 @@ export const shapeKindSchema = z.enum([
   'star',
   'text',
   'path',
+  'arc', // v1.6 弧/扇形（月牙、风扇、彩虹弧）：outerRadius=size，innerRadius/angle 可选
 ])
 export type ShapeKind = z.infer<typeof shapeKindSchema>
 
@@ -43,6 +44,16 @@ export type Anchor = z.infer<typeof anchorSchema>
 /** CSS 颜色串；中文颜色词在理解层完成映射（规格 §2.1），到达 DSL 时已是 CSS 值 */
 export const colorSchema = z.string().min(1)
 export type Color = z.infer<typeof colorSchema>
+
+/** v1.6 渐变填充（天空/水面/光晕等"好看"场景）：两色线性渐变，angle 度 0=左→右 90=上→下 */
+export const gradientSchema = z
+  .object({
+    from: colorSchema,
+    to: colorSchema,
+    angle: z.number().optional(),
+  })
+  .strict()
+export type Gradient = z.infer<typeof gradientSchema>
 
 export const ordinalSchema = z.union([
   z.literal('first'),
@@ -131,9 +142,14 @@ const createOpSchema = z
     text: z.string().optional(),
     fontSize: z.number().positive().optional(),
     fill: colorSchema.optional(),
+    gradient: gradientSchema.optional(), // v1.6 渐变填充（优先于 fill）
     stroke: colorSchema.optional(),
     strokeWidth: z.number().positive().optional(),
+    opacity: z.number().min(0).max(1).optional(), // v1.6 半透明（云/阴影/光晕），创建即可设
     rotation: z.number().optional(), // 角度，顺时针为正
+    cornerRadius: z.number().nonnegative().optional(), // v1.6 rect 圆角半径（柔化外观）
+    innerRadius: z.number().nonnegative().optional(), // v1.6 arc 内半径（>0=圆环弧；0=扇形）
+    angle: z.number().optional(), // v1.6 arc 扇形角度（度，缺省 270）
     desc: z.string().optional(), // plan 模式进度播报文案
   })
   .strict()
@@ -141,8 +157,10 @@ const createOpSchema = z
 const styleOpSchema = z
   .object({
     op: z.literal('style'),
+    desc: z.string().optional(), // v1.6：允许进度注释，免 strict 误拒
     target: targetSelectorSchema,
     fill: colorSchema.optional(),
+    gradient: gradientSchema.optional(), // v1.6 改为渐变填充
     stroke: colorSchema.optional(),
     strokeWidth: z.number().positive().optional(),
     opacity: z.number().min(0).max(1).optional(),
@@ -152,6 +170,7 @@ const styleOpSchema = z
 const moveOpSchema = z
   .object({
     op: z.literal('move'),
+    desc: z.string().optional(), // v1.6：允许进度注释，免 strict 误拒
     target: targetSelectorSchema,
     to: positionSchema.optional(),
     delta: vec2Schema.optional(),
@@ -161,6 +180,7 @@ const moveOpSchema = z
 const resizeOpSchema = z
   .object({
     op: z.literal('resize'),
+    desc: z.string().optional(), // v1.6：允许进度注释，免 strict 误拒
     target: targetSelectorSchema,
     scale: z.number().positive().optional(),
     to: z
@@ -176,6 +196,7 @@ const resizeOpSchema = z
 const rotateOpSchema = z
   .object({
     op: z.literal('rotate'),
+    desc: z.string().optional(), // v1.6：允许进度注释，免 strict 误拒
     target: targetSelectorSchema,
     degrees: z.number(), // 正=顺时针，负=逆时针
   })
@@ -184,6 +205,7 @@ const rotateOpSchema = z
 const setTextOpSchema = z
   .object({
     op: z.literal('setText'),
+    desc: z.string().optional(), // v1.6：允许进度注释，免 strict 误拒
     target: targetSelectorSchema,
     text: z.string().min(1),
   })
@@ -192,6 +214,7 @@ const setTextOpSchema = z
 const deleteOpSchema = z
   .object({
     op: z.literal('delete'),
+    desc: z.string().optional(), // v1.6：允许进度注释，免 strict 误拒
     target: targetSelectorSchema,
   })
   .strict()
@@ -199,6 +222,7 @@ const deleteOpSchema = z
 const renameOpSchema = z
   .object({
     op: z.literal('rename'),
+    desc: z.string().optional(), // v1.6：允许进度注释，免 strict 误拒
     target: targetSelectorSchema,
     name: z.string().min(1),
   })
@@ -207,6 +231,7 @@ const renameOpSchema = z
 const groupOpSchema = z
   .object({
     op: z.literal('group'),
+    desc: z.string().optional(), // v1.6：允许进度注释，免 strict 误拒
     targets: z.array(targetSelectorSchema).min(2),
     name: z.string().min(1).optional(),
   })
@@ -215,6 +240,7 @@ const groupOpSchema = z
 const ungroupOpSchema = z
   .object({
     op: z.literal('ungroup'),
+    desc: z.string().optional(), // v1.6：允许进度注释，免 strict 误拒
     target: targetSelectorSchema,
   })
   .strict()
@@ -222,6 +248,7 @@ const ungroupOpSchema = z
 const zorderOpSchema = z
   .object({
     op: z.literal('zorder'),
+    desc: z.string().optional(), // v1.6：允许进度注释，免 strict 误拒
     target: targetSelectorSchema,
     // v1.5：相对层级（"把太阳放到云后面"= {below:{byName:"云"}}）
     to: z.union([
@@ -255,6 +282,7 @@ const clearOpSchema = z
 const focusOpSchema = z
   .object({
     op: z.literal('focus'),
+    desc: z.string().optional(), // v1.6：允许进度注释，免 strict 误拒
     target: targetSelectorSchema,
   })
   .strict()
@@ -277,6 +305,7 @@ const mirrorOpSchema = z
 const alignOpSchema = z
   .object({
     op: z.literal('align'),
+    desc: z.string().optional(), // v1.6：允许进度注释，免 strict 误拒
     targets: z.array(targetSelectorSchema).min(2),
     axis: z.enum(['x', 'y']),
   })
@@ -286,6 +315,7 @@ const alignOpSchema = z
 const distributeOpSchema = z
   .object({
     op: z.literal('distribute'),
+    desc: z.string().optional(), // v1.6：允许进度注释，免 strict 误拒
     targets: z.array(targetSelectorSchema).min(3),
     axis: z.enum(['x', 'y']),
   })
@@ -355,6 +385,7 @@ export const opSchema = z
       case 'style':
         if (
           op.fill === undefined &&
+          op.gradient === undefined &&
           op.stroke === undefined &&
           op.strokeWidth === undefined &&
           op.opacity === undefined

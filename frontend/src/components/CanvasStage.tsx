@@ -1,9 +1,24 @@
 import type { RefObject } from 'react'
-import { Circle, Ellipse, Layer, Line, Rect, RegularPolygon, Stage, Star, Text } from 'react-konva'
+import { Arc, Circle, Ellipse, Layer, Line, Rect, RegularPolygon, Stage, Star, Text } from 'react-konva'
 import type Konva from 'konva'
 import { CANVAS_WIDTH, CANVAS_HEIGHT } from '../dsl'
 import { getBBox } from '../engine/scene'
 import type { SceneObject, SceneState } from '../engine/scene'
+
+/** v1.6 线性渐变 → Konva fillLinearGradient*（坐标为图形局部系，以中心为原点）。angle 度 0=左→右 90=上→下 */
+function gradientProps(o: SceneObject): Record<string, unknown> {
+  if (!o.gradient) return {}
+  const [, , w, h] = getBBox(o)
+  const r = Math.max(w, h) / 2 || 1
+  const rad = ((o.gradient.angle ?? 90) * Math.PI) / 180
+  const dx = Math.cos(rad) * r
+  const dy = Math.sin(rad) * r
+  return {
+    fillLinearGradientStartPoint: { x: -dx, y: -dy },
+    fillLinearGradientEndPoint: { x: dx, y: dy },
+    fillLinearGradientColorStops: [0, o.gradient.from, 1, o.gradient.to],
+  }
+}
 
 /** SceneObject → Konva 节点。坐标约定见 engine/scene.ts：(x,y) 为中心点 */
 function ShapeNode({ o }: { o: SceneObject }) {
@@ -15,6 +30,7 @@ function ShapeNode({ o }: { o: SceneObject }) {
     strokeWidth: o.strokeWidth,
     opacity: o.opacity,
     rotation: o.rotation,
+    ...gradientProps(o),
   }
   switch (o.shape) {
     case 'circle':
@@ -29,12 +45,23 @@ function ShapeNode({ o }: { o: SceneObject }) {
           height={o.height ?? 0}
           offsetX={(o.width ?? 0) / 2}
           offsetY={(o.height ?? 0) / 2}
+          cornerRadius={o.cornerRadius ?? 0}
         />
       )
     case 'triangle':
       return <RegularPolygon {...common} sides={3} radius={o.radius ?? 0} />
     case 'star':
       return <Star {...common} numPoints={5} outerRadius={o.radius ?? 0} innerRadius={o.innerRadius ?? 0} />
+    case 'arc':
+      // Konva Arc：从 rotation 角顺时针扫 angle 度；innerRadius>0 为圆环弧，=0 为扇形
+      return (
+        <Arc
+          {...common}
+          innerRadius={o.innerRadius ?? 0}
+          outerRadius={o.radius ?? 0}
+          angle={o.angle ?? 270}
+        />
+      )
     case 'line':
     case 'polyline':
       return <Line {...common} points={o.points ?? []} lineCap="round" lineJoin="round" />
