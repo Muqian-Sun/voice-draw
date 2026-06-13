@@ -291,6 +291,26 @@ body {
 .d-wave { stroke: var(--riso-blue); stroke-width: 9; stroke-linecap: round; opacity: 0.7; }
 .d-dot { fill: var(--riso-red); opacity: 0.85; }
 
+/* 背景"呼吸"：装饰元素绕各自中心缓慢错峰起伏，让画面像在呼吸（纯 CSS 环境动效）。
+   transform-box: fill-box → SVG 形状以自身包围盒中心为变换原点。 */
+.decor > * { transform-box: fill-box; transform-origin: center; will-change: transform; }
+.d-red { animation: decor-breathe 8s 0.9s ease-in-out infinite; }
+.d-ring { animation: decor-breathe 11s 1.6s ease-in-out infinite; }
+.d-yellow { animation: decor-breathe 7s 1.2s ease-in-out infinite; }
+.d-tri { animation: decor-breathe 9.5s 0.4s ease-in-out infinite; }
+.d-wave { animation: decor-sway 6.5s 0.6s ease-in-out infinite; }
+.d-dot { animation: decor-float 4.5s ease-in-out infinite; }
+.d-dot:nth-child(6) { animation-delay: 0s; }
+.d-dot:nth-child(7) { animation-delay: 0.35s; }
+.d-dot:nth-child(8) { animation-delay: 0.7s; }
+@keyframes decor-breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.04); } }
+@keyframes decor-sway { 0%, 100% { transform: translateX(0) scaleX(1); } 50% { transform: translateX(8px) scaleX(1.05); } }
+@keyframes decor-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-9px); } }
+/* 减弱动效偏好下关闭呼吸动画 */
+@media (prefers-reduced-motion: reduce) {
+  .decor > * { animation: none !important; }
+}
+
 /* 卡纸装裱（mount）：画纸嵌在亮卡纸里，整体投影落卡纸上 */
 .stage-scaler {
   position: absolute;
