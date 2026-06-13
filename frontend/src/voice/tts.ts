@@ -20,34 +20,33 @@ export class GatewayTts implements TtsProvider {
 
   constructor(private readonly baseUrl: string) {}
 
-  async speak(text: string): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/api/tts`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
+  /**
+   * 渐进播放：直接把 GET /api/tts?text= 交给 <audio> 元素，浏览器边下边播（分块 mp3），
+   * 首块到达即开声——不再等整段合成+下载完成。出错（含 503 未配置）触发 onerror → reject，
+   * 由编排器降级 speechSynthesis。文案为机器播报短句，置于 query 无隐私问题。
+   */
+  speak(text: string): Promise<void> {
+    const url = `${this.baseUrl}/api/tts?text=${encodeURIComponent(text)}`
+    return new Promise<void>((resolve, reject) => {
+      const audio = new Audio()
+      this.audio = audio
+      let settled = false
+      const finish = (fn: () => void) => {
+        if (settled) return
+        settled = true
+        if (this.audio === audio) this.audio = null
+        fn()
+      }
+      audio.onended = () => finish(resolve)
+      audio.onpause = () => finish(resolve) // cancel() 走 pause，视为播放结束
+      audio.onerror = () => finish(() => reject(new Error('TTS 网关播放失败（降级兜底）')))
+      audio.src = url
+      void audio.play().catch((e) => finish(() => reject(e instanceof Error ? e : new Error('音频播放失败'))))
     })
-    if (!res.ok) {
-      const body = (await res.json().catch(() => null)) as { message?: string } | null
-      throw new Error(body?.message ?? `TTS 网关 ${res.status}`)
-    }
-    const url = URL.createObjectURL(await res.blob())
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const audio = new Audio(url)
-        this.audio = audio
-        audio.onended = () => resolve()
-        audio.onpause = () => resolve() // cancel() 走 pause，视为播放结束
-        audio.onerror = () => reject(new Error('音频播放失败'))
-        void audio.play().catch(reject)
-      })
-    } finally {
-      this.audio = null
-      URL.revokeObjectURL(url)
-    }
   }
 
   cancel(): void {
-    this.audio?.pause()
+    this.audio?.pause() // 触发 onpause → resolve；短句残余流极小，不强行 load() 以免误触 onerror
     this.audio = null
   }
 }

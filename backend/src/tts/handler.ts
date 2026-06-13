@@ -78,8 +78,76 @@ export function parseTtsStream(body: string): { ok: true; audio: Buffer } | { ok
   return { ok: true, audio: Buffer.concat(chunks) }
 }
 
+/** text 取自 GET ?text=（前端用 <audio src> 渐进播放）或 POST body.text（兼容旧契约/测试） */
+function extractText(req: Request): unknown {
+  if (typeof req.query.text === 'string') return req.query.text
+  return (req.body as { text?: unknown } | undefined)?.text
+}
+
+/**
+ * 增量转发上游 JSON-lines 流：每解析出一个音频块就立即 res.write 原始 mp3 字节（分块传输），
+ * 前端 <audio> 收到首块即开播——播报延迟从「整段合成完」降到「首块到达」。
+ * 首个音频块到达前仍可改用 JSON 报错（headers 未发）；之后只能中断 res.end()。
+ */
+async function streamTts(body: ReadableStream<Uint8Array>, res: Response): Promise<void> {
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+  let started = false
+
+  // 处理一行；返回 false 表示流结束（END_CODE / 错误 / 非法行）
+  const handleLine = (line: string): boolean => {
+    const t = line.trim()
+    if (t === '') return true
+    let json: TtsStreamLine
+    try {
+      json = JSON.parse(t) as TtsStreamLine
+    } catch {
+      if (!started) res.status(502).json({ error: 'UPSTREAM_ERROR', message: `非法响应行：${t.slice(0, 80)}` })
+      return false
+    }
+    if (json.code === 0) {
+      if (typeof json.data === 'string' && json.data.length > 0) {
+        if (!started) {
+          res.setHeader('Content-Type', 'audio/mpeg')
+          res.setHeader('Cache-Control', 'no-store')
+          res.setHeader('X-Accel-Buffering', 'no') // 禁反向代理缓冲，保证分块即时下发
+          started = true
+        }
+        res.write(Buffer.from(json.data, 'base64'))
+      }
+      return true // data 为空的句元数据行：继续
+    }
+    if (json.code === END_CODE) return false
+    if (!started) res.status(502).json({ error: 'UPSTREAM_ERROR', message: `TTS 上游失败：code=${json.code ?? '?'} ${json.message ?? ''}` })
+    return false
+  }
+
+  let ended = false
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += decoder.decode(value, { stream: true })
+    let nl: number
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nl)
+      buf = buf.slice(nl + 1)
+      if (!handleLine(line)) {
+        ended = true
+        break
+      }
+    }
+    if (ended) break
+  }
+  if (!ended && buf.trim() !== '') handleLine(buf) // 末行可能无换行
+  void reader.cancel().catch(() => {})
+
+  if (started) res.end()
+  else if (!res.headersSent) res.status(502).json({ error: 'UPSTREAM_ERROR', message: '上游未返回音频数据' })
+}
+
 export async function handleTts(req: Request, res: Response): Promise<void> {
-  const parsed = requestSchema.safeParse(req.body)
+  const parsed = requestSchema.safeParse({ text: extractText(req) })
   if (!parsed.success) {
     res.status(400).json({ error: 'BAD_REQUEST', message: 'text 必填且 ≤80 字' })
     return
@@ -101,20 +169,17 @@ export async function handleTts(req: Request, res: Response): Promise<void> {
       body: JSON.stringify(buildTtsRequest(parsed.data.text, cfg)),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     })
-    const body = await upstream.text()
-    if (!upstream.ok) {
-      res.status(502).json({ error: 'UPSTREAM_ERROR', message: `TTS 上游 ${upstream.status}：${body.slice(0, 200)}` })
+    if (!upstream.ok || upstream.body === null) {
+      const errBody = await upstream.text().catch(() => '')
+      res.status(502).json({ error: 'UPSTREAM_ERROR', message: `TTS 上游 ${upstream.status}：${errBody.slice(0, 200)}` })
       return
     }
-    const r = parseTtsStream(body)
-    if (!r.ok) {
-      res.status(502).json({ error: 'UPSTREAM_ERROR', message: `TTS 上游失败：${r.error}` })
-      return
-    }
-    res.setHeader('Content-Type', 'audio/mpeg')
-    res.setHeader('Cache-Control', 'no-store')
-    res.send(r.audio)
+    await streamTts(upstream.body, res)
   } catch (e) {
+    if (res.headersSent) {
+      res.end()
+      return
+    }
     const timeout = (e as Error).name === 'TimeoutError' || (e as Error).name === 'AbortError'
     res.status(timeout ? 504 : 502).json({
       error: timeout ? 'UPSTREAM_TIMEOUT' : 'UPSTREAM_ERROR',
