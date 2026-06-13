@@ -338,17 +338,127 @@ function drawCrispFill(ctx: CanvasRenderingContext2D, o: SceneObject): void {
   ctx.restore()
 }
 
-/** 把一个对象完整画到 ctx：vpath/渐变背景走清晰矢量（含渐变+投影），其余图元走手绘笔触烘焙 */
+/** v2.0 文字渲染：自由画笔引擎不拆手写字形，按中心点用原生 fillText 呈现（CJK 可读、字体即时无 FOUT）。
+ *  字号/居中与 getBBox(scene.ts §text：fontSize、中心 y、宽=字数×fs)对齐 → 相对定位不偏；
+ *  honor rotation/opacity，有 stroke 时先描边后填充（描边色当轮廓，类似手写双色字）。 */
+function drawText(ctx: CanvasRenderingContext2D, o: SceneObject): void {
+  const text = o.text ?? ''
+  if (text.length === 0) return
+  const fs = o.fontSize ?? 16
+  ctx.save()
+  if (o.opacity !== undefined) ctx.globalAlpha = o.opacity
+  if (o.rotation) {
+    ctx.translate(o.x, o.y)
+    ctx.rotate((o.rotation * Math.PI) / 180)
+    ctx.translate(-o.x, -o.y)
+  }
+  ctx.font = `600 ${fs}px "PingFang SC", "Microsoft YaHei", system-ui, sans-serif`
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  if (o.stroke) {
+    ctx.strokeStyle = o.stroke
+    ctx.lineWidth = o.strokeWidth ?? Math.max(2, fs * 0.08)
+    ctx.lineJoin = 'round'
+    ctx.strokeText(text, o.x, o.y)
+  }
+  ctx.fillStyle = o.fill ?? INK
+  ctx.fillText(text, o.x, o.y)
+  ctx.restore()
+}
+
+/** v1.7 纹理 tile：透明底 + 暗纹（16×16 平铺，叠在已填充底色之上）。按类型缓存。
+ *  注：底色不画进 tile（与旧 Konva 版 fillPriority 不同）——这里走"实色填充 + 暗纹叠加"，
+ *  契合规格"在 fill 底色上叠暗纹"，且不覆盖描边轮廓。 */
+const patternCache = new Map<string, HTMLCanvasElement>()
+function patternTile(type: NonNullable<SceneObject['pattern']>): HTMLCanvasElement | undefined {
+  if (typeof document === 'undefined') return undefined
+  const cached = patternCache.get(type)
+  if (cached) return cached
+  const S = 16
+  const c = document.createElement('canvas')
+  c.width = S
+  c.height = S
+  const tctx = c.getContext('2d')
+  if (tctx === null) return undefined
+  const mark = 'rgba(0,0,0,0.2)'
+  tctx.fillStyle = mark
+  tctx.strokeStyle = mark
+  tctx.lineWidth = 2
+  switch (type) {
+    case 'stripes':
+      tctx.fillRect(0, 0, 5, S) // 竖条
+      break
+    case 'dots':
+      tctx.beginPath()
+      tctx.arc(S / 2, S / 2, 2.4, 0, Math.PI * 2)
+      tctx.fill()
+      break
+    case 'grid':
+      tctx.fillRect(S - 1.5, 0, 1.5, S)
+      tctx.fillRect(0, S - 1.5, S, 1.5)
+      break
+    case 'hatch':
+      tctx.beginPath()
+      tctx.moveTo(-4, S + 4)
+      tctx.lineTo(S + 4, -4) // 单向斜纹（平铺连续）
+      tctx.stroke()
+      break
+    case 'cross':
+      tctx.beginPath()
+      tctx.moveTo(-4, S + 4)
+      tctx.lineTo(S + 4, -4)
+      tctx.moveTo(-4, -4)
+      tctx.lineTo(S + 4, S + 4) // 交叉斜纹
+      tctx.stroke()
+      break
+  }
+  patternCache.set(type, c)
+  return c
+}
+
+/** 纹理叠加：在已实色填充的闭合形状内 clip 平铺暗纹 tile（衣纹/砖墙/鳞片/毛感）。
+ *  仅作用闭合可填充笔触（开放线/无填充跳过）；在 bakeStroke 之后调用，叠在底色上。 */
+function overlayPattern(
+  ctx: CanvasRenderingContext2D,
+  prepared: Prepared[],
+  pattern: NonNullable<SceneObject['pattern']>,
+): void {
+  const tile = patternTile(pattern)
+  if (!tile) return
+  const cp = ctx.createPattern(tile, 'repeat')
+  if (cp === null) return
+  for (const p of prepared) {
+    if (!p.s.closed || !p.s.fill || p.pts.length < 3) continue
+    const [bx, by, bw, bh] = bboxOf(p.pts)
+    ctx.save()
+    ctx.beginPath()
+    ctx.moveTo(p.pts[0][0], p.pts[0][1])
+    for (let k = 1; k < p.pts.length; k++) ctx.lineTo(p.pts[k][0], p.pts[k][1])
+    ctx.closePath()
+    ctx.clip()
+    ctx.fillStyle = cp
+    ctx.fillRect(bx, by, bw, bh)
+    ctx.restore()
+  }
+}
+
+/** 把一个对象完整画到 ctx：vpath/文字/渐变背景走清晰矢量（含渐变+投影），其余图元走手绘笔触烘焙 */
 function bakeObject(ctx: CanvasRenderingContext2D, o: SceneObject): void {
   if (o.shape === 'vpath') {
     drawVPath(ctx, o)
+    return
+  }
+  if (o.shape === 'text') {
+    drawText(ctx, o) // 文字：原生 fillText（不拆笔触）
     return
   }
   if (o.gradient && o.shape === 'rect') {
     drawCrispFill(ctx, o) // 渐变背景：清晰渐变（天空/草地）
     return
   }
-  for (const p of prepareObject(o)) bakeStroke(ctx, p)
+  const prepared = prepareObject(o)
+  for (const p of prepared) bakeStroke(ctx, p)
+  if (o.pattern) overlayPattern(ctx, prepared, o.pattern) // v1.7 纹理叠在底色上
 }
 
 /** 主体（全部 vpath）并集包围盒——背景=非 vpath，识别干净 */
@@ -391,12 +501,14 @@ interface QueueItem {
   id: string
   sig: string
   prepared: Prepared[]
+  pattern?: NonNullable<SceneObject['pattern']> // v1.7 纹理：落定时叠在底色上
 }
 
 interface AnimState {
   id: string
   sig: string
   prepared: Prepared[]
+  pattern?: NonNullable<SceneObject['pattern']>
   strokeI: number
   mode: 'draw' | 'fill' | 'travel'
   drawn: number
@@ -479,6 +591,7 @@ export const FreehandSceneStage = forwardRef<FreehandCaptureHandle, { scene: Sce
         id: item.id,
         sig: item.sig,
         prepared: item.prepared,
+        pattern: item.pattern,
         strokeI: 0,
         mode: 'draw',
         drawn: 0,
@@ -489,9 +602,10 @@ export const FreehandSceneStage = forwardRef<FreehandCaptureHandle, { scene: Sce
       }
     }
 
-    // 落定整个对象：逐笔烘焙进 committed，记签名
+    // 落定整个对象：逐笔烘焙进 committed（含纹理叠加），记签名
     const bakeAnim = (a: AnimState) => {
       for (const p of a.prepared) bakeStroke(cctx, p)
+      if (a.pattern) overlayPattern(cctx, a.prepared, a.pattern) // v1.7 纹理叠在底色上
       bakedSigRef.current.set(a.id, a.sig)
     }
 
@@ -627,10 +741,13 @@ export const FreehandSceneStage = forwardRef<FreehandCaptureHandle, { scene: Sce
     for (const o of objs) {
       const sig = sigOf(o)
       if (baked.get(o.id) === sig) continue // 已落定且未变
-      // 即时烘焙（不走逐笔动画）：vpath 清晰矢量 + 背景（渐变矩形/满宽大矩形）。
+      // 即时烘焙（不走逐笔动画）：vpath 清晰矢量 + 文字 + 背景（渐变矩形/满宽大矩形）。
       // 关键修复：背景 z 最低，若走动画队列会在主体（已即时落定）之后铺满、把主体盖掉（"画一半清空"）；
       // 故背景一律即时落定，按 z 序排在主体之下。逐笔动画只留给前景小图元。
-      const instant = o.shape === 'vpath' || (o.shape === 'rect' && (o.gradient !== undefined || getBBox(o)[2] >= 0.85 * W))
+      // 文字也即时落定：自由画笔不拆字形（objectToStrokes 对 text 返回空），走动画队列会被当空笔触
+      // 跳过、标记已烘焙却从未画进 committed → 文字永远不显示（v2.0 换引擎回归）。
+      const instant =
+        o.shape === 'vpath' || o.shape === 'text' || (o.shape === 'rect' && (o.gradient !== undefined || getBBox(o)[2] >= 0.85 * W))
       if (instant) {
         const qv = queueRef.current.findIndex((q) => q.id === o.id)
         if (qv >= 0) queueRef.current.splice(qv, 1)
@@ -643,7 +760,7 @@ export const FreehandSceneStage = forwardRef<FreehandCaptureHandle, { scene: Sce
       if (qi >= 0 && queueRef.current[qi].sig === sig) continue // 已在队列且一致
       baked.delete(o.id)
       if (qi >= 0) queueRef.current.splice(qi, 1)
-      queueRef.current.push({ id: o.id, sig, prepared: prepareObject(o) })
+      queueRef.current.push({ id: o.id, sig, prepared: prepareObject(o), pattern: o.pattern })
       if (a && a.id === o.id) animRef.current = null // 改动正在画的对象 → 重启
     }
 
