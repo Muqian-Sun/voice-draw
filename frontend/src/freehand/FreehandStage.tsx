@@ -52,14 +52,15 @@ interface Prepared {
   cum: number[]
   total: number
   bbox: [number, number, number, number] // [x,y,w,h]
-  fillPasses: Array<{ x0: number; x1: number; y: number }> // 着色的一道道横扫笔道（蛇形交替方向）
+  fillRings: Array<{ pts: Pt[]; cum: number[]; len: number }> // 沿形向心收缩的等高线（闭合环），由外到内填
+  fillLen: number // 所有环周长之和（着色总运笔长度）
 }
 
 const SPEED = 400 // 运笔速度 px/s（适中观感，便于看清绘制过程）
 const TRAVEL_S = 0.3 // 抬笔换行时长
-const FILL_GAP = 10 // 着色笔道行距 px（细腻、不粗）
-const FILL_PASS_SEC = 0.1 // 每道扫色时长 s（"慢慢一笔一笔"着色）
-const FILL_PEN_W = 14 // 着色笔宽 px（每道用 perfect-freehand 两端收笔 → 触压感；略宽于行距 → 实色叠满无缝）
+const FILL_GAP = 9 // 同心等高线间距 px（一圈圈沿形收拢，细、圈多）
+const FILL_SPEED = 3200 // 着色运笔速度 px/s（沿轮廓一圈圈往里收，自然流水填）
+const FILL_PEN_W = 12 // 着色笔宽 px（圆头实色、略宽于间距 → 相邻圈叠满、彻底涂满无缝）
 const ease = (t: number) => t * t * (3 - 2 * t)
 const lerp = (a: Pt, b: Pt, t: number): Pt => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
 
@@ -117,17 +118,25 @@ export function FreehandStage({
         s.smooth === false ? densifyLinear(anchors, s.closed ?? false, 7) : sampleCenterline(anchors, s.closed ?? false, 18)
       const cum = cumulativeLengths(pts)
       const bbox = bboxOf(pts)
-      // 预生成着色笔道：自上而下逐行横扫，方向交替（蛇形），每行一道实色笔道
-      const fillPasses: Array<{ x0: number; x1: number; y: number }> = []
-      if (s.closed && s.fill) {
-        const [bx, by, bw, bh] = bbox
-        const rows = Math.max(1, Math.ceil(bh / FILL_GAP))
-        for (let r = 0; r < rows; r++) {
-          const y = by + Math.min(bh, (r + 0.5) * FILL_GAP)
-          fillPasses.push(r % 2 === 0 ? { x0: bx, x1: bx + bw, y } : { x0: bx + bw, x1: bx, y })
+      // 预生成着色等高线：把轮廓按中心向内等比收缩成一圈圈闭合环（沿形流水，非矩形扫线），由外到内填
+      const fillRings: Array<{ pts: Pt[]; cum: number[]; len: number }> = []
+      let fillLen = 0
+      if (s.closed && s.fill && pts.length >= 3) {
+        const cx = bbox[0] + bbox[2] / 2
+        const cy = bbox[1] + bbox[3] / 2
+        let dmax = 1
+        for (const [x, y] of pts) dmax = Math.max(dmax, Math.hypot(x - cx, y - cy))
+        const stepF = FILL_GAP / dmax // 每圈收缩比（边界间距≈FILL_GAP，越往内越密 → 必然涂满）
+        for (let f = 1; f > 0; f -= stepF) {
+          const ring = pts.map(([x, y]) => [cx + (x - cx) * f, cy + (y - cy) * f] as Pt)
+          ring.push(ring[0]) // 闭合
+          const rcum = cumulativeLengths(ring)
+          const len = rcum[rcum.length - 1]
+          fillRings.push({ pts: ring, cum: rcum, len })
+          fillLen += len
         }
       }
-      return { s, pts, cum, total: cum[cum.length - 1], bbox, fillPasses }
+      return { s, pts, cum, total: cum[cum.length - 1], bbox, fillRings, fillLen }
     })
 
     let strokeI = 0
@@ -140,58 +149,56 @@ export function FreehandStage({
     let last = 0
     let raf = 0
 
-    const fillable = (p: Prepared) => p.fillPasses.length > 0
-    const fillDur = (p: Prepared) => Math.max(0.3, p.fillPasses.length * FILL_PASS_SEC) // 按笔道数定时长
+    const fillable = (p: Prepared) => p.fillRings.length > 0
+    const fillDur = (p: Prepared) => Math.max(0.4, p.fillLen / FILL_SPEED) // 按总运笔长定时长
 
-    // 用笔一道一道着色：clip 形内，每道用 perfect-freehand 描成**两端收笔**的实色笔道（细、有触压感），
-    // 相邻道略叠 → 实色无缝（无浓淡）。动画上看得见笔来回一道道涂。fr=填色进度 0~1。
-    const paintPass = (tctx: CanvasRenderingContext2D, fill: string, x0: number, x1: number, y: number) => {
-      const outline = getStroke(
-        [
-          [x0, y],
-          [x1, y],
-        ],
-        { size: FILL_PEN_W, thinning: 0, simulatePressure: false, start: { cap: false, taper: FILL_PEN_W * 1.1 }, end: { cap: false, taper: FILL_PEN_W * 1.1 } },
-      )
-      if (outline.length < 3) return
+    // 沿形一圈一圈着色：clip 形内，由外到内逐圈实色描（圆头、相邻圈叠满 → 彻底涂满无缝），
+    // 顺着轮廓流水推进；动画上一圈一圈画出来。fr=填色进度 0~1。
+    const strokeRing = (tctx: CanvasRenderingContext2D, ring: Pt[], upto: number) => {
       tctx.beginPath()
-      tctx.moveTo(outline[0][0], outline[0][1])
-      for (const pt of outline) tctx.lineTo(pt[0], pt[1])
-      tctx.closePath()
-      tctx.fillStyle = fill
-      tctx.fill()
+      tctx.moveTo(ring[0][0], ring[0][1])
+      for (let k = 1; k < upto; k++) tctx.lineTo(ring[k][0], ring[k][1])
+      tctx.stroke()
     }
     const fillClosed = (tctx: CanvasRenderingContext2D, p: Prepared, fr: number) => {
-      const n = p.fillPasses.length
-      if (n === 0 || !p.s.fill) return
+      if (p.fillRings.length === 0 || !p.s.fill) return
       tctx.save()
       tctx.beginPath()
       tctx.moveTo(p.pts[0][0], p.pts[0][1])
       for (let k = 1; k < p.pts.length; k++) tctx.lineTo(p.pts[k][0], p.pts[k][1])
       tctx.closePath()
       tctx.clip()
-      const prog = fr * n
-      const full = Math.min(n, Math.floor(prog))
-      for (let i = 0; i < full; i++) {
-        const ps = p.fillPasses[i]
-        paintPass(tctx, p.s.fill, ps.x0, ps.x1, ps.y)
-      }
-      if (full < n) {
-        const ps = p.fillPasses[full]
-        const x = ps.x0 + (ps.x1 - ps.x0) * (prog - full)
-        paintPass(tctx, p.s.fill, ps.x0, x, ps.y)
+      tctx.strokeStyle = p.s.fill
+      tctx.lineWidth = FILL_PEN_W
+      tctx.lineCap = 'round'
+      tctx.lineJoin = 'round'
+      let target = fr * p.fillLen
+      for (const ring of p.fillRings) {
+        if (target <= 0) break
+        if (target >= ring.len) {
+          strokeRing(tctx, ring.pts, ring.pts.length) // 整圈
+          target -= ring.len
+        } else {
+          const slice = sliceUpTo(ring.pts, ring.cum, target) // 当前圈部分
+          if (slice.length >= 2) strokeRing(tctx, slice, slice.length)
+          target = 0
+        }
       }
       tctx.restore()
     }
-    // 填色时笔尖位置：当前道当前 x（蛇形交替方向）
+    // 着色时笔尖位置：当前圈、当前弧长处
     const fillPen = (p: Prepared, fr: number): Pt => {
-      const n = p.fillPasses.length
-      if (n === 0) return p.pts[0]
-      const prog = Math.min(n, fr * n)
-      const i = Math.min(n - 1, Math.floor(prog))
-      const t = Math.min(1, prog - i)
-      const ps = p.fillPasses[i]
-      return [ps.x0 + (ps.x1 - ps.x0) * t, ps.y]
+      if (p.fillRings.length === 0) return p.pts[0]
+      let target = fr * p.fillLen
+      for (const ring of p.fillRings) {
+        if (target <= ring.len) {
+          const slice = sliceUpTo(ring.pts, ring.cum, Math.max(0, target))
+          return slice[slice.length - 1] ?? ring.pts[0]
+        }
+        target -= ring.len
+      }
+      const last = p.fillRings[p.fillRings.length - 1].pts
+      return last[last.length - 1]
     }
 
     const paintStroke = (tctx: CanvasRenderingContext2D, p: Prepared, L: number) => {
