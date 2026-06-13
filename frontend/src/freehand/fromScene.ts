@@ -99,18 +99,32 @@ export function objectToStrokes(o: SceneObject): Stroke[] {
       const a1 = a0 + (sweep * Math.PI) / 180
       const n = Math.max(8, Math.round(sweep / 8))
       const outer = ellPts(o.x, o.y, ro, ro, a0, a1, n)
-      const pts: Pt[] = ri > 0 ? outer.concat(ellPts(o.x, o.y, ri, ri, a1, a0, n)) : [[o.x, o.y] as Pt, ...outer]
-      // arc 已自带起始角，旋转勿重复施加
-      const s: Stroke = {
-        pts,
-        closed: true,
-        smooth: false,
-        color: ink,
-        width: o.strokeWidth ?? (o.stroke ? 3 : 5),
-        taper: false,
-        ...(fill ? { fill } : {}),
+      // innerRadius>0：圆环弧（外弧+内弧反向）闭合成带——月牙/彩虹带/扇环
+      if (ri > 0) {
+        return [
+          {
+            pts: outer.concat(ellPts(o.x, o.y, ri, ri, a1, a0, n)),
+            closed: true,
+            smooth: false,
+            color: ink,
+            width: o.strokeWidth ?? (o.stroke ? 3 : 5),
+            taper: false,
+            ...(fill ? { fill } : {}),
+          },
+        ]
       }
-      return [s]
+      // innerRadius=0：作为**开放弧线**画（嘴/彩虹/笑弧）——只描弧本身，不连回圆心、不填成实心饼。
+      // （此前 [圆心,...弧] 闭合 + 默认填充 → 嘴被画成实心扇形饼，是"嘴对不正"的根因。）
+      return [
+        {
+          pts: outer,
+          closed: false,
+          smooth: true,
+          color: o.stroke ?? INK, // 弧线用描边色；无描边回退墨色（不取默认填充蓝）
+          width: o.strokeWidth ?? 6,
+          taper: false,
+        },
+      ]
     }
     case 'line':
     case 'polyline':

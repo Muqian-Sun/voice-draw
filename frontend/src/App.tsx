@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type Konva from 'konva'
 import { CANVAS_HEIGHT, CANVAS_WIDTH, parseOps, type Op } from './dsl'
 import { commitIncremental, createHistory, executeWithHistory, type HistoryOutcome, type HistoryState } from './engine/history'
-import { CanvasStage } from './components/CanvasStage'
+import { FreehandSceneStage, type FreehandCaptureHandle } from './components/FreehandSceneStage'
 import { DebugPanel, type LogEntry } from './components/DebugPanel'
 import { buildAmbiguityClarify, matchExpecting, type ExpectingItem } from './nlu/clarify'
 import { executeTransaction } from './engine/interpreter'
@@ -57,7 +56,7 @@ export default function App() {
   const [history, setHistory] = useState<HistoryState>(createHistory)
   const historyRef = useRef(history)
   historyRef.current = history
-  const stageRef = useRef<Konva.Stage | null>(null)
+  const stageRef = useRef<FreehandCaptureHandle | null>(null)
 
   const [log, setLog] = useState<LogEntry[]>([])
   const pushLog = useCallback((level: LogEntry['level'], text: string) => {
@@ -81,16 +80,9 @@ export default function App() {
       outcome.notices?.forEach((n) => pushLog('warn', `⚙ ${n}`))
       // export 在引擎侧是无状态变更 Op，事务成功后由这里触发 PNG 下载
       if (!outcome.error && parsed.ops.some((o) => o.op === 'export')) {
-        const stage = stageRef.current
-        if (stage) {
-          // 焦点高亮、纸面参考网格属界面装饰，不进导出图
-          const overlay = stage.findOne<Konva.Layer>('.overlay')
-          const grid = stage.findOne('.paper-grid')
-          overlay?.visible(false)
-          grid?.visible(false)
-          const url = stage.toDataURL({ pixelRatio: 2 })
-          overlay?.visible(true)
-          grid?.visible(true)
+        // 焦点高亮/网格属界面装饰，不进导出图：toDataURL 单独渲染干净整幅
+        const url = stageRef.current?.toDataURL(2)
+        if (url) {
           const a = document.createElement('a')
           a.href = url
           a.download = `voicedraw-${Date.now()}.png`
@@ -194,15 +186,9 @@ export default function App() {
     async (maxRounds: number): Promise<{ rounds: number; fixed: number; clean: boolean }> => {
       let fixed = 0
       for (let round = 1; round <= maxRounds; round++) {
-        const stage = stageRef.current
-        if (stage === null) return { rounds: round - 1, fixed, clean: false }
-        const overlay = stage.findOne<Konva.Layer>('.overlay')
-        const grid = stage.findOne('.paper-grid')
-        overlay?.visible(false)
-        grid?.visible(false)
-        const image = stage.toDataURL({ pixelRatio: 1.0 }) // v1.7：0.75→1.0，VLM 看清 ±10px 错位
-        overlay?.visible(true)
-        grid?.visible(true)
+        const cap = stageRef.current
+        if (cap === null) return { rounds: round - 1, fixed, clean: false }
+        const image = cap.toDataURL(1.0) // 干净整幅（无笔/选中框），VLM 看清 ±10px 错位
         // 本地几何预检线索并入质检指令（出界等高置信缺陷，指引 VLM 更准）
         const findings = geometricFindings(historyRef.current.scene)
         const instruction = findings === '' ? CRITIQUE_INSTRUCTION : `${CRITIQUE_INSTRUCTION}\n本地几何预检：${findings}`
@@ -744,7 +730,7 @@ export default function App() {
           </svg>
           <div className="stage-scaler" style={{ transform: `translate(-50%, -50%) scale(${fit})` }}>
             <div className="stage-frame">
-              <CanvasStage scene={scene} stageRef={stageRef} />
+              <FreehandSceneStage scene={scene} ref={stageRef} />
             </div>
           </div>
           {/* 浮层：共创建议气泡 + 实时字幕（压在图版下沿之上） */}
