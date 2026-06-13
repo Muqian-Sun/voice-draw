@@ -33,6 +33,7 @@ function buildSceneStrokes(): Stroke[] {
 
 export function FreehandDemo() {
   const [mode, setMode] = useState<'cat' | 'scene'>('scene')
+  const [rough, setRough] = useState(false) // 手绘抖动缺省关：直线笔直、圆顺滑
   const sceneStrokes = useMemo(buildSceneStrokes, [])
 
   const tab = (m: 'cat' | 'scene', label: string) => (
@@ -58,10 +59,26 @@ export function FreehandDemo() {
       <div style={{ position: 'fixed', top: 10, right: 14, zIndex: 10, display: 'flex', gap: 8 }}>
         {tab('scene', '组件引擎场景 → 重绘')}
         {tab('cat', '手绘示例')}
+        <button
+          onClick={() => setRough((r) => !r)}
+          style={{
+            padding: '6px 14px',
+            fontFamily: 'ui-monospace, monospace',
+            fontSize: 13,
+            border: '2px solid #2b2b2b',
+            borderRadius: 8,
+            background: rough ? '#E8743B' : '#fff',
+            color: rough ? '#fff' : '#2b2b2b',
+            cursor: 'pointer',
+          }}
+        >
+          {rough ? '手绘抖动 开' : '手绘抖动 关'}
+        </button>
       </div>
       <FreehandStage
-        key={mode}
+        key={`${mode}-${rough}`}
         strokes={mode === 'cat' ? CAT_DEMO : sceneStrokes}
+        roughness={rough ? 2.5 : 0}
         title={
           mode === 'cat'
             ? '手绘示例 — 人工编排笔触'
