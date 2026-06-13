@@ -119,18 +119,21 @@ export function FreehandStage({
         ctx.stroke()
         return
       }
-      // 开放笔画（或闭合显墨中）：perfect-freehand 生成变宽墨带轮廓（尖角不夹断、含笔帽/收笔/速度模拟压感）
+      // 开放笔画（或闭合显墨中）：perfect-freehand 生成轮廓。
+      // 关键：关掉 simulatePressure/thinning（恒定笔宽）——否则按"速度"模拟的压感会让笔宽随
+      // 显墨长度逐帧重算、已画段宽度抖动闪烁，看着不流畅；改为恒宽 + 多输入平滑，线条顺滑稳定。
+      // 仅靠 start/end taper 保留落笔/收笔的两端收细（笔感）。
       const w = p.s.width ?? 8
       const taper = p.s.taper !== false
       const outline = getStroke(slice as number[][], {
         size: w,
-        thinning: taper ? 0.55 : 0.2,
-        smoothing: 0.5,
-        streamline: 0.15,
-        simulatePressure: true,
+        thinning: 0,
+        smoothing: 0.62,
+        streamline: 0.32,
+        simulatePressure: false,
         last: L >= p.total,
-        start: { cap: !taper, taper: taper ? w * 3 : 0 },
-        end: { cap: !taper, taper: taper ? w * 3 : 0 },
+        start: { cap: !taper, taper: taper ? w * 2.5 : 0 },
+        end: { cap: !taper, taper: taper ? w * 2.5 : 0 },
       })
       if (outline.length < 3) return
       ctx.beginPath()
