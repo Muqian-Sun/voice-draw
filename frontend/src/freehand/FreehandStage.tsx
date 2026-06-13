@@ -7,6 +7,7 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   cumulativeLengths,
+  densifyLinear,
   ribbonOutline,
   sampleCenterline,
   sliceUpTo,
@@ -28,7 +29,7 @@ function arc(cx: number, cy: number, rx: number, ry: number, a0: number, a1: num
 }
 
 /** demo：一只墨线速写小猫（每个元素是一"笔"，按数组顺序逐笔画出） */
-const DEMO: Stroke[] = [
+export const CAT_DEMO: Stroke[] = [
   { pts: arc(512, 392, 150, 140, -Math.PI / 2, -Math.PI / 2 + Math.PI * 1.96, 26), color: INK, width: 9, taper: true },
   { pts: [[430, 282], [402, 200], [486, 258]], color: INK, width: 9, taper: true },
   { pts: [[594, 282], [622, 200], [538, 258]], color: INK, width: 9, taper: true },
@@ -56,7 +57,13 @@ const TRAVEL_S = 0.3 // 抬笔换行时长
 const ease = (t: number) => t * t * (3 - 2 * t)
 const lerp = (a: Pt, b: Pt, t: number): Pt => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
 
-export function FreehandStage() {
+export function FreehandStage({
+  strokes = CAT_DEMO,
+  title,
+}: {
+  strokes?: Stroke[]
+  title?: string
+}) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const [runId, setRunId] = useState(0)
   const [done, setDone] = useState(false)
@@ -71,8 +78,10 @@ export function FreehandStage() {
     cv.height = H * dpr
     setDone(false)
 
-    const prep: Prepared[] = DEMO.map((s) => {
-      const pts = sampleCenterline(s.pts, s.closed ?? false, 18)
+    const prep: Prepared[] = strokes.map((s) => {
+      // smooth=false（多边形/矩形）走线性稠密化保棱角；否则向心 CR 平滑
+      const pts =
+        s.smooth === false ? densifyLinear(s.pts, s.closed ?? false, 7) : sampleCenterline(s.pts, s.closed ?? false, 18)
       const cum = cumulativeLengths(pts)
       return { s, pts, cum, total: cum[cum.length - 1] }
     })
@@ -157,9 +166,9 @@ export function FreehandStage() {
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
       ctx.fillStyle = '#f6f0e4'
       ctx.fillRect(0, 0, W, H)
-      // 已完成的笔
-      const upto = mode === 'end' ? prep.length : strokeI
-      for (let i = 0; i < upto; i++) paintStroke(prep[i], prep[i].total)
+      // 已完成的笔（travel 时含刚画完、尚未自增 strokeI 的当前笔——否则换行间隙它会短暂消失）
+      const doneCount = mode === 'end' ? prep.length : mode === 'travel' ? strokeI + 1 : strokeI
+      for (let i = 0; i < doneCount; i++) paintStroke(prep[i], prep[i].total)
       // 笔尖位置
       let penPos: Pt = penFrom
       let lifted = false
@@ -210,7 +219,7 @@ export function FreehandStage() {
 
     raf = requestAnimationFrame(frame)
     return () => cancelAnimationFrame(raf)
-  }, [runId])
+  }, [runId, strokes])
 
   return (
     <div
@@ -227,7 +236,9 @@ export function FreehandStage() {
     >
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 14 }}>
         <strong style={{ fontSize: 22, letterSpacing: 1 }}>自由画笔 · FREEHAND</strong>
-        <span style={{ color: '#8a8170', fontSize: 13 }}>research / feat/freehand-pen — 变宽墨带 · 弧长运笔 · 渐进显墨 · 笔尖动画</span>
+        <span style={{ color: '#8a8170', fontSize: 13 }}>
+          {title ?? 'research / feat/freehand-pen — 变宽墨带 · 弧长运笔 · 渐进显墨 · 笔尖动画'}
+        </span>
       </div>
       <canvas
         ref={canvasRef}
