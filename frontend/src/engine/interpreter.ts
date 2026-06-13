@@ -237,6 +237,8 @@ function buildGeometry(state: SceneState, op: CreateOp): GeometryResult {
     }
     case 'text':
       return { ok: true, geo: { text: op.text, fontSize: op.fontSize ?? Math.max(16, 0.5 * v) } }
+    case 'vpath':
+      return { ok: true, geo: {} } // vpath 在 execCreateResolved 顶部已早返回，不会到这（防御性）
   }
 }
 
@@ -418,7 +420,42 @@ function execCreate(state: SceneState, op: CreateOp): OpResult {
   return execCreateResolved(state, opEff)
 }
 
+// v2.0 vpath：贝塞尔矢量路径。d 为画布系绝对坐标，(x,y) 作平移偏移（缺省 0）；
+// 不走 size/几何/clamp 逻辑（与图元根本不同），直接建命名场景对象。
+function execCreateVpath(state: SceneState, op: CreateOp): OpResult {
+  const shapeSeq = (state.seqByShape.vpath ?? 0) + 1
+  const id = `vpath#${shapeSeq}`
+  const maxZ = state.objects.reduce((m, o) => Math.max(m, o.z), 0)
+  const obj: SceneObject = {
+    id,
+    ...(op.name ? { name: op.name } : {}),
+    shape: 'vpath',
+    x: 0,
+    y: 0,
+    d: op.d,
+    ...(op.gradient ? { gradient: op.gradient } : op.fill ? { fill: op.fill } : {}),
+    ...(op.stroke ? { stroke: op.stroke } : {}),
+    ...(op.strokeWidth ? { strokeWidth: op.strokeWidth } : {}),
+    ...(op.opacity !== undefined ? { opacity: op.opacity } : {}),
+    ...(op.shadow !== undefined && op.shadow !== false ? { shadow: resolveShadow(op.shadow) } : {}),
+    rotation: op.rotation ?? 0,
+    z: maxZ + 1,
+    createdSeq: state.seq + 1,
+  }
+  return {
+    ok: true,
+    state: {
+      objects: [...state.objects, obj],
+      focusId: id,
+      focusScope: 'object',
+      seq: state.seq + 1,
+      seqByShape: { ...state.seqByShape, vpath: shapeSeq },
+    },
+  }
+}
+
 function execCreateResolved(state: SceneState, op: CreateOp): OpResult {
+  if (op.shape === 'vpath') return execCreateVpath(state, op)
   const geo = buildGeometry(state, op)
   if (!geo.ok) return geo
 

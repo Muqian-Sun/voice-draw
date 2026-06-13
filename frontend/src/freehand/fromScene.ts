@@ -139,6 +139,8 @@ export function objectToStrokes(o: SceneObject): Stroke[] {
     }
     case 'text':
       return [] // 文字暂不拆笔（手写字形是另一专题），由调用方决定是否另行贴字
+    case 'vpath':
+      return [] // v2.0 贝塞尔矢量路径：由渲染器走清晰 Path2D，不拆成手绘笔触
   }
 }
 

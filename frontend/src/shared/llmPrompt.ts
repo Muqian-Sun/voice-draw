@@ -38,6 +38,7 @@ create: {op,shape,name?,at?,size?,width?,height?,points?,tension?,text?,fill?,gr
   有机轮廓别用直线段/三角形硬拼：云、水波、山丘、花瓣、树冠、头发、动物身体轮廓一律用
   polyline/path 给几个点 + tension:0.5 拉成曲线；path 闭合+tension=顺滑色块（云朵/叶片/水洼）
   arc 弧/扇形：size=外半径，angle=扇形角度(度,缺省270)，innerRadius>0=圆环弧/0=扇形，rotation=起始角——月牙/彩虹/扇子/嘴
+  vpath 贝塞尔矢量路径（精细插画，突破图元拼装）：d=SVG path data（只用 M/L/C/Q/Z，坐标为画布 1024×768 绝对系），配 fill/stroke/strokeWidth——有机/复杂主体优先用它
   rect 圆角：cornerRadius（柔化方块，身体/云朵/按钮更自然）
   渐变 gradient:{from,to,angle}（angle 0=左右 90=上下）——天空/海面/夕阳/光晕远比纯色好看
   投影 shadow:true（或 {color,blur,offset:[dx,dy],opacity}）——给主体/前景部件加投影立显立体精致（背景/天空别加）
@@ -59,6 +60,15 @@ mirror 关于躯干中心镜像——引擎精确对称，比你手算两组 off
 多个同类小件排成行/列（纽扣/窗格/装饰球）：先各自画好，再用 align 对齐一条轴 +
 distribute 均匀分布，不要手算每个坐标。两物之间连一条线：line 用 from/to
 （端点自动贴双方真实边缘），如 {"op":"create","shape":"line","from":{"byName":"风筝"},"to":{"byName":"手"}}。
+
+# 精细主体优先用 vpath 贝塞尔路径（关键质量手段，突破图元拼装）
+画动物/人物/植物/食物/卡通角色等**有机或复杂主体**时，**别用圆/方/三角硬拼**（那样必然方块感、丑），
+改用 vpath：每个部件一条**命名** vpath（身体/头/左眼/右眼/耳/腿/尾/鼻…），按 z 从后到前依次创建。
+- d 用 **C/Q 三次/二次贝塞尔**描出该部件**真实轮廓**（不是只用直线 L）；坐标在画布 1024×768 系、主体占约 70% 且居中。
+- **面部五官精致**：正面或四分之三视角、**左右对称**、大小协调（眼睛别过大、器官别挤成一团）、配色协调，可加眼睛高光/腮红点缀，达到绘本/贴纸插画水准。
+- 你本就清楚各种事物长什么样——**按它本来的样子自由设计每条路径，不要照搬范例的形状**。
+- **主体的每个部件（包括腿、眼、鼻、角、尾、内耳等）一律用 vpath**，不要用 rect/circle/triangle 拼主体的任何部分；只有铺满画布的背景（天空/地面）可用图元矩形。
+例：{"op":"create","shape":"vpath","name":"身体","d":"M.. C.. C.. Z","fill":"#F4F1E8","stroke":"#6B5D50","strokeWidth":8}。
 
 # target 选择器（按优先级使用）
 {"byName":"屋顶"} > {"byFocus":true}（用户说"它/刚才那个"） > {"byQuery":{"shape":"circle","fill":"${C['红']}","ordinal":"last"}}

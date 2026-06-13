@@ -241,6 +241,43 @@ function prepareObject(o: SceneObject): Prepared[] {
   return objectToStrokes(o).map((s, i) => prepareStroke(s, (o.z + 1) * 0x9e3779b1 + i))
 }
 
+/** v2.0 vpath：清晰矢量渲染（Path2D 填充+描边，非手绘墨线——精细插画质量优先）。
+ *  d 为画布系绝对坐标，(x,y) 作平移偏移；fill 缺省取 gradient 起始色（暂不做真渐变）。 */
+function drawVPath(ctx: CanvasRenderingContext2D, o: SceneObject): void {
+  if (!o.d) return
+  let path: Path2D
+  try {
+    path = new Path2D(o.d)
+  } catch {
+    return // d 语法非法 → 跳过（不崩）
+  }
+  ctx.save()
+  if (o.x || o.y) ctx.translate(o.x, o.y)
+  if (o.opacity !== undefined) ctx.globalAlpha = o.opacity
+  const fill = o.fill ?? o.gradient?.from
+  if (fill) {
+    ctx.fillStyle = fill
+    ctx.fill(path)
+  }
+  if (o.stroke) {
+    ctx.strokeStyle = o.stroke
+    ctx.lineWidth = o.strokeWidth ?? 2
+    ctx.lineJoin = 'round'
+    ctx.lineCap = 'round'
+    ctx.stroke(path)
+  }
+  ctx.restore()
+}
+
+/** 把一个对象完整画到 ctx：vpath 走清晰矢量，其余图元走手绘笔触烘焙 */
+function bakeObject(ctx: CanvasRenderingContext2D, o: SceneObject): void {
+  if (o.shape === 'vpath') {
+    drawVPath(ctx, o)
+    return
+  }
+  for (const p of prepareObject(o)) bakeStroke(ctx, p)
+}
+
 export interface FreehandCaptureHandle {
   /** 渲染干净整幅（无笔尖/选中框）→ PNG dataURL，供导出与视觉自检 */
   toDataURL: (pixelRatio?: number) => string
@@ -293,9 +330,7 @@ export const FreehandSceneStage = forwardRef<FreehandCaptureHandle, { scene: Sce
         tctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0)
         tctx.fillStyle = PAPER
         tctx.fillRect(0, 0, W, H)
-        for (const o of [...sceneRef.current.objects].sort((a, b) => a.z - b.z)) {
-          for (const p of prepareObject(o)) bakeStroke(tctx, p)
-        }
+        for (const o of [...sceneRef.current.objects].sort((a, b) => a.z - b.z)) bakeObject(tctx, o)
         return c.toDataURL('image/png')
       },
     }),
@@ -479,6 +514,13 @@ export const FreehandSceneStage = forwardRef<FreehandCaptureHandle, { scene: Sce
     for (const o of objs) {
       const sig = sigOf(o)
       if (baked.get(o.id) === sig) continue // 已落定且未变
+      // vpath：清晰矢量、即时烘焙（不走逐笔动画），直接标记已落定，由下方 committed 重建画出
+      if (o.shape === 'vpath') {
+        const qv = queueRef.current.findIndex((q) => q.id === o.id)
+        if (qv >= 0) queueRef.current.splice(qv, 1)
+        baked.set(o.id, sig)
+        continue
+      }
       const a = animRef.current
       if (a && a.id === o.id && a.sig === sig) continue // 正在画且一致
       const qi = queueRef.current.findIndex((q) => q.id === o.id)
@@ -495,7 +537,7 @@ export const FreehandSceneStage = forwardRef<FreehandCaptureHandle, { scene: Sce
     cctx.clearRect(0, 0, W, H)
     for (const o of objs) {
       if (!baked.has(o.id)) continue
-      for (const p of prepareObject(o)) bakeStroke(cctx, p)
+      bakeObject(cctx, o)
     }
 
     // 重启循环：播放新增/改动对象的逐笔动画；无新活时也渲一帧（更新选中框/抹除）
