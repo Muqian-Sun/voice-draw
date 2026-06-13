@@ -13,6 +13,7 @@
     "@ricky0123/vad-web": "^0.0.30",
     "konva": "^9.3.16",
     "onnxruntime-web": "1.26.0",
+    "perfect-freehand": "^1.2.3",
     "pinyin-pro": "^3.28.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

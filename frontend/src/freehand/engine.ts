@@ -116,44 +116,5 @@ export function tipAt(points: Pt[], cum: number[], L: number): { pt: Pt; angle: 
   return { pt, angle: Math.atan2(pt[1] - prev[1], pt[0] - prev[0]) }
 }
 
-/** 宽度剖面：t∈[0,1] 沿全笔归一化位置。taper=两端收笔（由细→粗→细） */
-export function widthProfile(base: number, t: number, taper: boolean): number {
-  if (!taper) return base
-  return base * (0.18 + 0.82 * Math.sin(Math.PI * Math.max(0, Math.min(1, t))))
-}
-
-/**
- * 变宽墨带轮廓：沿中心线每点取法向，左右各推 ±w/2，组成可填充的闭合多边形。
- * @param slicePts  已显露的中心线前缀（来自 sliceUpTo）
- * @param sliceCum  slicePts 的累计弧长
- * @param total     **整笔**总弧长（宽度剖面映射到全笔，使显墨时笔宽稳定生长）
- */
-export function ribbonOutline(
-  slicePts: Pt[],
-  sliceCum: number[],
-  total: number,
-  base: number,
-  taper: boolean,
-): Pt[] {
-  const n = slicePts.length
-  if (n < 2) return []
-  const left: Pt[] = []
-  const right: Pt[] = []
-  for (let i = 0; i < n; i++) {
-    const a = slicePts[Math.max(0, i - 1)]
-    const b = slicePts[Math.min(n - 1, i + 1)]
-    let tx = b[0] - a[0]
-    let ty = b[1] - a[1]
-    const len = Math.hypot(tx, ty) || 1
-    tx /= len
-    ty /= len
-    const nx = -ty // 法向
-    const ny = tx
-    const t = total > 0 ? sliceCum[i] / total : 0
-    const w = widthProfile(base, t, taper) / 2
-    const p = slicePts[i]
-    left.push([p[0] + nx * w, p[1] + ny * w])
-    right.push([p[0] - nx * w, p[1] - ny * w])
-  }
-  return left.concat(right.reverse())
-}
+// 变宽墨带轮廓改由 perfect-freehand 的 getStroke 生成（尖角不夹断、含笔帽/收笔/速度模拟压感），
+// 原朴素 ribbonOutline/widthProfile 已移除（见 FreehandStage.paintStroke）。

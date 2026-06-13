@@ -60,6 +60,7 @@ GOLDEN_LIVE=1 pnpm test golden                # B3/B4 真实 LLM 实跑（需 ba
 |----|------|
 | react / react-dom | 前端 UI 框架 |
 | konva / react-konva | Canvas 2D 场景图渲染（绘图执行引擎底座） |
+| perfect-freehand | 自由画笔研究：输入点 → 变宽墨带轮廓多边形（笔触动画渲染，`?freehand` 演示） |
 | zod | 运行时 Schema 校验（前后端：DSL / LLM 输出 / ASR 转发协议） |
 | vitest | 单元测试（前后端） |
 | ws | backend ASR WebSocket 网关与上游转发 |

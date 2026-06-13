@@ -1,13 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import {
-  cumulativeLengths,
-  ribbonOutline,
-  sampleCenterline,
-  sliceUpTo,
-  tipAt,
-  widthProfile,
-  type Pt,
-} from './engine'
+import { getStroke } from 'perfect-freehand'
+import { cumulativeLengths, densifyLinear, sampleCenterline, sliceUpTo, tipAt, type Pt } from './engine'
 
 describe('自由画笔引擎', () => {
   it('sampleCenterline：稠密化且过首尾锚点；<2 点原样', () => {
@@ -62,25 +55,30 @@ describe('自由画笔引擎', () => {
     expect(angle).toBeCloseTo(0) // 向 +x
   })
 
-  it('widthProfile：taper 两端细中间粗；非 taper 恒定', () => {
-    expect(widthProfile(10, 0, true)).toBeLessThan(widthProfile(10, 0.5, true))
-    expect(widthProfile(10, 1, true)).toBeLessThan(widthProfile(10, 0.5, true))
-    expect(widthProfile(10, 0.5, true)).toBeCloseTo(10) // 中点≈base
-    expect(widthProfile(10, 0.2, false)).toBe(10)
-  })
-
-  it('ribbonOutline：左右各 n 点的闭合多边形（2n 点）', () => {
+  it('densifyLinear：直线段线性稠密化保棱角（闭合回首点）', () => {
     const pts: Pt[] = [
       [0, 0],
       [10, 0],
-      [20, 0],
+      [10, 10],
     ]
-    const cum = cumulativeLengths(pts)
-    const out = ribbonOutline(pts, cum, 20, 8, false)
-    expect(out).toHaveLength(pts.length * 2)
-    // 水平线、恒宽 8 → 上沿 y≈-4、下沿 y≈+4
-    const ys = out.map((p) => p[1])
-    expect(Math.min(...ys)).toBeCloseTo(-4)
-    expect(Math.max(...ys)).toBeCloseTo(4)
+    const dense = densifyLinear(pts, true, 4)
+    expect(dense.length).toBeGreaterThan(pts.length)
+    expect(dense[0]).toEqual([0, 0])
+    expect(dense[dense.length - 1]).toEqual([0, 0]) // 闭合回首点
+  })
+
+  it('perfect-freehand getStroke：输入点 → 非空轮廓多边形（依赖接入冒烟）', () => {
+    const outline = getStroke(
+      [
+        [0, 0],
+        [10, 5],
+        [20, 12],
+        [35, 18],
+      ],
+      { size: 16, thinning: 0.5, simulatePressure: true },
+    )
+    expect(Array.isArray(outline)).toBe(true)
+    expect(outline.length).toBeGreaterThan(3)
+    expect(outline.every((p) => p.length === 2 && Number.isFinite(p[0]) && Number.isFinite(p[1]))).toBe(true)
   })
 })
