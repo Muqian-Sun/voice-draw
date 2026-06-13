@@ -379,6 +379,19 @@ type OpResult = { ok: true; state: SceneState; notice?: string } | { ok: false; 
 
 const LINE_SHAPES = new Set(['line', 'polyline'])
 
+/** v1.7 投影解析：true→默认柔和投影；对象→并入缺省。false 在调用点已剔除 */
+const SHADOW_DEFAULT = { color: '#1a1410', blur: 14, offsetX: 0, offsetY: 7, opacity: 0.3 } as const
+function resolveShadow(s: true | { color?: string; blur?: number; offset?: [number, number]; opacity?: number }): SceneObject['shadow'] {
+  if (s === true) return { ...SHADOW_DEFAULT }
+  return {
+    color: s.color ?? SHADOW_DEFAULT.color,
+    blur: s.blur ?? SHADOW_DEFAULT.blur,
+    offsetX: s.offset?.[0] ?? SHADOW_DEFAULT.offsetX,
+    offsetY: s.offset?.[1] ?? SHADOW_DEFAULT.offsetY,
+    opacity: s.opacity ?? SHADOW_DEFAULT.opacity,
+  }
+}
+
 function execCreate(state: SceneState, op: CreateOp): OpResult {
   // v1.5 连接线：端点 = 双方真实形状边缘上朝向彼此的点，转译成 at + points 走常规路径
   let opEff = op
@@ -457,6 +470,9 @@ function execCreateResolved(state: SceneState, op: CreateOp): OpResult {
         }),
     ...(op.cornerRadius !== undefined && op.shape === 'rect' ? { cornerRadius: op.cornerRadius } : {}),
     ...(op.opacity !== undefined ? { opacity: op.opacity } : {}),
+    ...(op.tension !== undefined && (isLine || op.shape === 'path') ? { tension: op.tension } : {}),
+    ...(op.shadow !== undefined && op.shadow !== false ? { shadow: resolveShadow(op.shadow) } : {}),
+    ...(op.pattern !== undefined && !isLine && !isText ? { pattern: op.pattern } : {}),
     rotation: op.rotation ?? 0,
     z: maxZ + 1,
     createdSeq: state.seq + 1,
@@ -501,6 +517,7 @@ function execOp(state: SceneState, op: Op): OpResult {
       if (op.stroke !== undefined) patch.stroke = op.stroke
       if (op.strokeWidth !== undefined) patch.strokeWidth = op.strokeWidth
       if (op.opacity !== undefined) patch.opacity = op.opacity
+      if (op.shadow !== undefined) patch.shadow = op.shadow === false ? undefined : resolveShadow(op.shadow)
       return { ok: true, state: patchObject(state, t.obj.id, patch) }
     }
 

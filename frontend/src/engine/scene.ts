@@ -22,6 +22,7 @@ export interface SceneObject {
   cornerRadius?: number // v1.6 rect 圆角
   angle?: number // v1.6 arc 扇形角度（度）
   points?: number[] // line/polyline/path：相对 (x,y) 的扁平数组 [x1,y1,x2,y2,...]
+  tension?: number // v1.7 line/polyline/path 曲线平滑张力（0=折线，0.4~0.5=自然曲线）
   text?: string
   fontSize?: number
   fill?: string
@@ -29,6 +30,8 @@ export interface SceneObject {
   stroke?: string
   strokeWidth?: number
   opacity?: number
+  shadow?: { color: string; blur: number; offsetX: number; offsetY: number; opacity: number } // v1.7 投影（已解析）
+  pattern?: 'stripes' | 'dots' | 'grid' | 'hatch' | 'cross' // v1.7 纹理填充
   rotation: number
   z: number
   groupId?: string
