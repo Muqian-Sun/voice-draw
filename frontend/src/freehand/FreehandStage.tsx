@@ -51,13 +51,15 @@ interface Prepared {
   pts: Pt[]
   cum: number[]
   total: number
-  bbox: [number, number, number, number] // [x,y,w,h]，填色用
+  bbox: [number, number, number, number] // [x,y,w,h]
+  fillPasses: Array<{ x0: number; x1: number; y: number }> // 着色的一道道横扫笔道（蛇形交替方向）
 }
 
 const SPEED = 400 // 运笔速度 px/s（适中观感，便于看清绘制过程）
 const TRAVEL_S = 0.3 // 抬笔换行时长
-const FILL_DOWN_SPEED = 150 // 填色时填充前沿下移速度 px/s（"慢慢填"，按形高定时长）
-const FILL_SWEEP_GAP = 26 // 填色笔来回扫动的行距 px（决定来回次数）
+const FILL_GAP = 15 // 着色笔道行距 px
+const FILL_PASS_SEC = 0.16 // 每道扫色时长 s（"慢慢一笔一笔"着色）
+const FILL_ALPHA = 0.6 // 单道笔色不透明度（半透明 → 来回叠加出真实着色的笔触/渐变感）
 const ease = (t: number) => t * t * (3 - 2 * t)
 const lerp = (a: Pt, b: Pt, t: number): Pt => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
 
@@ -114,7 +116,18 @@ export function FreehandStage({
       const pts =
         s.smooth === false ? densifyLinear(anchors, s.closed ?? false, 7) : sampleCenterline(anchors, s.closed ?? false, 18)
       const cum = cumulativeLengths(pts)
-      return { s, pts, cum, total: cum[cum.length - 1], bbox: bboxOf(pts) }
+      const bbox = bboxOf(pts)
+      // 预生成着色笔道：自上而下逐行横扫，方向交替（蛇形），每行一道半透明笔色
+      const fillPasses: Array<{ x0: number; x1: number; y: number }> = []
+      if (s.closed && s.fill) {
+        const [bx, by, bw, bh] = bbox
+        const rows = Math.max(1, Math.ceil(bh / FILL_GAP))
+        for (let r = 0; r < rows; r++) {
+          const y = by + Math.min(bh, (r + 0.5) * FILL_GAP)
+          fillPasses.push(r % 2 === 0 ? { x0: bx, x1: bx + bw, y } : { x0: bx + bw, x1: bx, y })
+        }
+      }
+      return { s, pts, cum, total: cum[cum.length - 1], bbox, fillPasses }
     })
 
     let strokeI = 0
@@ -127,30 +140,53 @@ export function FreehandStage({
     let last = 0
     let raf = 0
 
-    const fillable = (p: Prepared) => Boolean(p.s.closed && p.s.fill)
-    const fillDur = (p: Prepared) => Math.max(0.35, p.bbox[3] / FILL_DOWN_SPEED) // 按形高定填色时长
-    // 用笔填色：clip 到形状内，自上而下推进填充前沿（实心覆盖、无缝），笔在前沿来回扫动
+    const fillable = (p: Prepared) => p.fillPasses.length > 0
+    const fillDur = (p: Prepared) => Math.max(0.3, p.fillPasses.length * FILL_PASS_SEC) // 按笔道数定时长
+
+    // 用笔一道一道着色：clip 形内，每道单独半透明描（来回叠加出笔触/渐变感，非死板实心），
+    // 当前道沿横向生长。fr=填色进度 0~1，映射到第几道 + 当前道完成比例。
     const fillClosed = (tctx: CanvasRenderingContext2D, p: Prepared, fr: number) => {
-      if (!p.s.fill) return
-      const [bx, by, bw, bh] = p.bbox
+      const n = p.fillPasses.length
+      if (n === 0 || !p.s.fill) return
       tctx.save()
       tctx.beginPath()
       tctx.moveTo(p.pts[0][0], p.pts[0][1])
       for (let k = 1; k < p.pts.length; k++) tctx.lineTo(p.pts[k][0], p.pts[k][1])
       tctx.closePath()
       tctx.clip()
-      tctx.fillStyle = p.s.fill
-      tctx.fillRect(bx - 1, by - 1, bw + 2, bh * Math.min(1, fr) + 1)
+      tctx.globalAlpha = FILL_ALPHA
+      tctx.strokeStyle = p.s.fill
+      tctx.lineWidth = FILL_GAP * 1.4 // 略宽于行距 → 相邻道半透明叠加，出着色渐变/笔触
+      tctx.lineCap = 'round'
+      tctx.lineJoin = 'round'
+      const prog = fr * n
+      const full = Math.min(n, Math.floor(prog))
+      for (let i = 0; i < full; i++) {
+        const ps = p.fillPasses[i]
+        tctx.beginPath()
+        tctx.moveTo(ps.x0, ps.y)
+        tctx.lineTo(ps.x1, ps.y)
+        tctx.stroke() // 每道单独 stroke → 叠加处更浓（着色感）
+      }
+      if (full < n) {
+        const ps = p.fillPasses[full]
+        const x = ps.x0 + (ps.x1 - ps.x0) * (prog - full)
+        tctx.beginPath()
+        tctx.moveTo(ps.x0, ps.y)
+        tctx.lineTo(x, ps.y)
+        tctx.stroke()
+      }
       tctx.restore()
     }
-    // 填色时笔尖位置：在当前填充前沿上来回扫动（蛇形），像在涂色
+    // 填色时笔尖位置：当前道当前 x（蛇形交替方向）
     const fillPen = (p: Prepared, fr: number): Pt => {
-      const [bx, by, bw, bh] = p.bbox
-      const sweeps = Math.max(2, Math.round(bh / FILL_SWEEP_GAP))
-      const sp = fr * sweeps
-      const frac = sp - Math.floor(sp)
-      const x = Math.floor(sp) % 2 === 0 ? bx + frac * bw : bx + bw - frac * bw
-      return [x, by + fr * bh]
+      const n = p.fillPasses.length
+      if (n === 0) return p.pts[0]
+      const prog = Math.min(n, fr * n)
+      const i = Math.min(n - 1, Math.floor(prog))
+      const t = Math.min(1, prog - i)
+      const ps = p.fillPasses[i]
+      return [ps.x0 + (ps.x1 - ps.x0) * t, ps.y]
     }
 
     const paintStroke = (tctx: CanvasRenderingContext2D, p: Prepared, L: number) => {
