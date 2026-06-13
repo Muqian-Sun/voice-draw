@@ -711,3 +711,31 @@ describe('v1.6 视觉富化（arc / cornerRadius / gradient）', () => {
     expect(s1.objects[0].fill).toBe('#0074D9')
   })
 })
+
+describe('多轮 append：构造类引用 byName 命中多个取最近（修 append 五官丢失停摆）', () => {
+  const subject = (fill: string): Op[] => [
+    { op: 'create', shape: 'vpath', name: '头', d: 'M232 321 C238 246 303 204 380 216 C453 228 501 284 494 358 C487 432 424 482 346 475 C271 468 226 395 232 321 Z', fill },
+    { op: 'create', shape: 'vpath', name: '左耳', d: 'M272 252 C260 190 286 145 330 211 C310 219 292 234 272 252 Z', fill },
+    { op: 'mirror', target: { byName: '左耳' }, about: { byName: '头' }, name: '右耳' },
+    { op: 'create', shape: 'vpath', name: '左眼', d: 'M305 330 C305 307 322 292 342 302 C361 312 363 342 345 354 C324 368 305 353 305 330 Z', fill: '#111111' },
+    { op: 'mirror', target: { byName: '左眼' }, about: { byName: '头' }, name: '右眼' },
+  ]
+
+  it('在已有同名部件的画布上再画一个主体：mirror 不再 AMBIGUOUS 停摆，五官全到齐', () => {
+    const s1 = run(subject('#F4A340'))
+    expect(s1.objects).toHaveLength(5)
+    const s2 = run(subject('#888888'), s1) // run 内部断言无 error → 事务未停摆
+    expect(s2.objects).toHaveLength(10) // 两主体各 5 件齐全（旧件 + 新件）
+    // 第二主体的右耳由其自身（最近）左耳镜像，而非旧件
+    const leftEars = s2.objects.filter((o) => o.name === '左耳').sort((a, b) => a.createdSeq - b.createdSeq)
+    const rightEars = s2.objects.filter((o) => o.name === '右耳').sort((a, b) => a.createdSeq - b.createdSeq)
+    expect(rightEars[1].createdSeq).toBeGreaterThan(leftEars[1].createdSeq)
+  })
+
+  it('编辑类 target 仍保留歧义澄清：style 改同名件命中多个 → AMBIGUOUS_TARGET（§5.7 不动）', () => {
+    const s1 = executeTransaction(createEmptyScene(), subject('#F4A340')).state
+    const s2 = executeTransaction(s1, subject('#888888')).state // 画布上两个「左耳」
+    const r = executeTransaction(s2, [{ op: 'style', target: { byName: '左耳' }, fill: '#FF0000' }])
+    expect(r.error?.code).toBe('AMBIGUOUS_TARGET')
+  })
+})

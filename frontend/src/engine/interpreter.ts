@@ -62,7 +62,14 @@ const err = (code: EngineErrorCode, message: string, candidateIds?: string[]): E
 
 type ResolveResult = { ok: true; obj: SceneObject } | { ok: false; error: EngineError }
 
-export function resolveTarget(state: SceneState, sel: TargetSelector): ResolveResult {
+/**
+ * @param preferRecent 构造类引用（mirror 的 target/about、相对定位 at.ref/between、连线 from/to、
+ *   相对尺寸 relativeTo）专用：byName 命中多个时取**最近创建**的那个，而非报 AMBIGUOUS_TARGET。
+ *   语义：刚画完"左耳"紧接着 mirror 它，指的就是刚画的那只——避免多轮在已有同名部件的画布上
+ *   再画一个主体时，引用同名旧件触发歧义、事务中途停摆、后续部件（五官）整片丢失。
+ *   编辑类 target（改色/缩放/移动…）不传此参，仍返回 AMBIGUOUS_TARGET → 走 §5.7 澄清。
+ */
+export function resolveTarget(state: SceneState, sel: TargetSelector, preferRecent = false): ResolveResult {
   if ('byId' in sel) {
     const obj = state.objects.find((o) => o.id === sel.byId)
     return obj ? { ok: true, obj } : { ok: false, error: err('TARGET_NOT_FOUND', `画布上没有 ${sel.byId}`) }
@@ -75,11 +82,13 @@ export function resolveTarget(state: SceneState, sel: TargetSelector): ResolveRe
       if (member !== undefined) return { ok: true, obj: member }
       return { ok: false, error: err('TARGET_NOT_FOUND', `画布上没有「${sel.byName}」`) }
     }
-    if (hits.length > 1)
+    if (hits.length > 1) {
+      if (preferRecent) return { ok: true, obj: hits.reduce((a, b) => (b.createdSeq > a.createdSeq ? b : a)) }
       return {
         ok: false,
         error: err('AMBIGUOUS_TARGET', `有 ${hits.length} 个「${sel.byName}」`, hits.map((o) => o.id)),
       }
+    }
     return { ok: true, obj: hits[0] }
   }
   if ('byFocus' in sel) {
@@ -179,7 +188,7 @@ function resolveSize(state: SceneState, spec: SizeSpec | undefined, fallback: nu
   if (typeof spec === 'number') return { ok: true, v: spec }
   if (typeof spec === 'string') return { ok: true, v: SEMANTIC_SIZE[spec] }
   // 相对尺寸维度规则（§2.4）：width → 参照宽；height → 参照高；size → max(参照宽,高)/2
-  const t = resolveTarget(state, spec.relativeTo)
+  const t = resolveTarget(state, spec.relativeTo, true)
   if (!t.ok) return t
   const b = bboxOf(t.obj)
   const base = dim === 'width' ? b.w : dim === 'height' ? b.h : Math.max(b.w, b.h) / 2
@@ -356,9 +365,9 @@ function resolvePosition(
   if ('x' in at) return { ok: true, point: { x: at.x, y: at.y } }
   if ('between' in at) {
     // v1.5：两参照中心插值（"在头和身体之间"）
-    const a = resolveTarget(state, at.between[0])
+    const a = resolveTarget(state, at.between[0], true)
     if (!a.ok) return a
-    const b = resolveTarget(state, at.between[1])
+    const b = resolveTarget(state, at.between[1], true)
     if (!b.ok) return b
     const ca = getCenter(a.obj)
     const cb = getCenter(b.obj)
@@ -372,7 +381,7 @@ function resolvePosition(
   if (at.ref === 'canvas') {
     p = placeInside(w, h, at.anchor, at.gap ?? CANVAS_PADDING)
   } else {
-    const t = resolveTarget(state, at.ref)
+    const t = resolveTarget(state, at.ref, true)
     if (!t.ok) return t
     if (at.onEdge) {
       // v1.3.1 边缘贴附：锚点 = 参照真实形状边缘交点。线类钉首端点；
@@ -424,9 +433,9 @@ function execCreate(state: SceneState, op: CreateOp): OpResult {
   // v1.5 连接线：端点 = 双方真实形状边缘上朝向彼此的点，转译成 at + points 走常规路径
   let opEff = op
   if (op.from !== undefined && op.to !== undefined) {
-    const a = resolveTarget(state, op.from)
+    const a = resolveTarget(state, op.from, true)
     if (!a.ok) return a
-    const b = resolveTarget(state, op.to)
+    const b = resolveTarget(state, op.to, true)
     if (!b.ok) return b
     const ca = getCenter(a.obj)
     const cb = getCenter(b.obj)
@@ -779,7 +788,7 @@ function execOp(state: SceneState, op: Op): OpResult {
       if (typeof op.to === 'object') {
         // v1.5 相对层级："放到 X 后面/前面"——落在参照 z 的紧邻位置（分数 z，渲染按 sort）
         const refSel = 'above' in op.to ? op.to.above : op.to.below
-        const ref = resolveTarget(state, refSel)
+        const ref = resolveTarget(state, refSel, true) // 层级参照系构造类引用
         if (!ref.ok) return ref
         const delta = 'above' in op.to ? 0.5 : -0.5
         const scope = geometryScope(state, op.target, o)
@@ -840,9 +849,10 @@ function execOp(state: SceneState, op: Op): OpResult {
 
     case 'mirror': {
       // v1.5 镜像复制：关于 about 参照的中心轴翻转位置与几何（对称部件由引擎精确生成）
-      const t = resolveTarget(state, op.target)
+      // target/about 为构造类引用 → preferRecent：刚画的"左耳/猫头"，多轮同名时取最近，避免停摆
+      const t = resolveTarget(state, op.target, true)
       if (!t.ok) return t
-      const ax = resolveTarget(state, op.about)
+      const ax = resolveTarget(state, op.about, true)
       if (!ax.ok) return ax
       const o = t.obj
       const c = getCenter(ax.obj)
