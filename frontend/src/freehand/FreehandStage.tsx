@@ -112,21 +112,24 @@ export function FreehandStage({
     const paintStroke = (tctx: CanvasRenderingContext2D, p: Prepared, L: number) => {
       const slice = sliceUpTo(p.pts, p.cum, L)
       if (slice.length < 2) return
-      // 闭合形状：始终沿中心线折线描边（直边保持直、圆保持圆），完成时再 closePath+填充。
-      // 这样"绘制过程"与"最终结果"完全一致——此前显墨走 getStroke 的平滑会把直边画弯，
-      // 完成又 snap 回直多边形，于是出现"过程歪、结果直"的割裂。
+      // 闭合形状：沿中心线折线描边（直边保持直、圆保持圆），过程=结果。
       if (p.s.closed) {
         const complete = L >= p.total
+        // 墨水填充也走过程：把"已显墨周界 + 回起点的弦"闭合填充，墨随描边逐步铺满
+        //（弦构成填充前沿，跟着笔尖推进；完成时弦消失=整形填满）。
+        if (p.s.fill) {
+          tctx.beginPath()
+          tctx.moveTo(slice[0][0], slice[0][1])
+          for (let k = 1; k < slice.length; k++) tctx.lineTo(slice[k][0], slice[k][1])
+          tctx.closePath()
+          tctx.fillStyle = p.s.fill
+          tctx.fill()
+        }
+        // 描边只描已画周界（完成才 closePath，显墨期不描回程弦）
         tctx.beginPath()
         tctx.moveTo(slice[0][0], slice[0][1])
         for (let k = 1; k < slice.length; k++) tctx.lineTo(slice[k][0], slice[k][1])
-        if (complete) {
-          tctx.closePath()
-          if (p.s.fill) {
-            tctx.fillStyle = p.s.fill
-            tctx.fill()
-          }
-        }
+        if (complete) tctx.closePath()
         tctx.lineWidth = p.s.width ?? 6
         tctx.strokeStyle = p.s.color ?? INK
         tctx.lineJoin = 'round'
