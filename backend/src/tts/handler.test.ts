@@ -12,12 +12,12 @@ afterEach(() => {
 })
 
 describe('readTtsConfig', () => {
-  it('appid 与 token 都有才算配置；缺省音色灿灿', () => {
+  it('appid 与 token 都有才算配置；缺省音色樱桃丸子', () => {
     expect(readTtsConfig()).toBeNull()
     process.env.VOLC_TTS_APPID = 'app1'
     expect(readTtsConfig()).toBeNull()
     process.env.VOLC_TTS_TOKEN = 'tk1'
-    expect(readTtsConfig()).toEqual({ appid: 'app1', token: 'tk1', speaker: 'zh_female_cancan_mars_bigtts' })
+    expect(readTtsConfig()).toEqual({ appid: 'app1', token: 'tk1', speaker: 'zh_female_yingtaowanzi_mars_bigtts' })
   })
 })
 

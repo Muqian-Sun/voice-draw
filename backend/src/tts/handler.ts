@@ -14,7 +14,7 @@ import { z } from 'zod'
 
 const TTS_URL = 'https://openspeech.bytedance.com/api/v3/tts/unidirectional'
 const RESOURCE_ID = 'volc.service_type.10029'
-const DEFAULT_SPEAKER = 'zh_female_cancan_mars_bigtts' // 灿灿
+const DEFAULT_SPEAKER = 'zh_female_yingtaowanzi_mars_bigtts' // 樱桃丸子（可爱萌系女声）
 /** 播报文案 ≤20 字（协议 §2.3），上限放宽到 80 防御异常输入 */
 const MAX_TEXT_LEN = 80
 const TIMEOUT_MS = 10_000
