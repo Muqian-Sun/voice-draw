@@ -22,7 +22,8 @@ const DEFAULT_BASE_URL = 'https://ark.cn-beijing.volces.com/api/coding/v3'
 const DEFAULT_MODEL = 'doubao-seed-code-2.0'
 const DEFAULT_VISION_MODEL = 'doubao-seed-code-2.0'
 
-export const FIRST_TOKEN_TIMEOUT_MS = { parse: 8_000, plan: 20_000 } as const // 双双放宽：seed-code-2.0 高峰期排队尾延迟（parse 4s 实测连续误杀）
+// parse / plan 均关思考以求出图速度（首 token 快）；plan 质量改由"画后多轮异步自检精修"兜底
+export const FIRST_TOKEN_TIMEOUT_MS = { parse: 8_000, plan: 20_000 } as const
 /** 首 token 之后的总时长兜底（流卡死保护）；plan 长输出在 ~20 tok/s 上游需更宽 */
 export const TOTAL_TIMEOUT_MS = { parse: 30_000, plan: 90_000 } as const
 
@@ -75,17 +76,31 @@ export function buildMessages(body: LlmParseRequest): ChatMessage[] {
   return messages
 }
 
-/** 解析 SSE 流的一行，返回 delta 文本（非数据行/结束标记返回 null） */
-export function extractSseDelta(line: string): string | null {
+/** 解析 SSE data 行 → delta 对象（含 content 与思考链 reasoning_content）；非数据/结束/异常返回 null */
+function parseSseDelta(line: string): { content?: string; reasoning_content?: string } | null {
   if (!line.startsWith('data:')) return null
   const data = line.slice(5).trim()
   if (data === '' || data === '[DONE]') return null
   try {
-    const json = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string } }> }
-    return json.choices?.[0]?.delta?.content ?? null
+    const json = JSON.parse(data) as {
+      choices?: Array<{ delta?: { content?: string; reasoning_content?: string } }>
+    }
+    return json.choices?.[0]?.delta ?? null
   } catch {
     return null
   }
+}
+
+/** 内容 delta 文本（非数据行/结束标记/空内容返回 null） */
+export function extractSseDelta(line: string): string | null {
+  const c = parseSseDelta(line)?.content
+  return typeof c === 'string' && c.length > 0 ? c : null
+}
+
+/** 思考链 delta（thinking 开启时的 reasoning_content）：仅作连接保活信号，不计入内容/延迟，不转发前端 */
+export function extractSseReasoning(line: string): string | null {
+  const r = parseSseDelta(line)?.reasoning_content
+  return typeof r === 'string' && r.length > 0 ? r : null
 }
 
 export function isLlmConfigured(): boolean {
@@ -125,7 +140,8 @@ export async function handleLlmParse(req: Request, res: Response): Promise<void>
         model,
         stream: true,
         temperature: 0,
-        // 关闭思考模式（方舟扩展参数）：结构化解析不需要推理链，省下的是首 token 与总时长
+        // 思考模式全关（方舟扩展参数）：求出图速度——开思考要在服务端先想 10~25s 才出首字，
+        // "几十秒还在解析中"即源于此。质量改由画后多轮异步视觉自检精修兜底（不追求一次成图）。
         thinking: { type: 'disabled' },
         // 不传 response_format：Coding 端点的 deepseek-v4-flash 不支持 json_object（实测 400）；
         // JSON-only 由 System Prompt 约束 + 前端校验重试兜底
@@ -157,11 +173,18 @@ export async function handleLlmParse(req: Request, res: Response): Promise<void>
       const lines = buffer.split('\n')
       buffer = lines.pop() ?? ''
       for (const line of lines) {
+        // 思考阶段保活：部分模型/端点会以 reasoning_content 流式吐思考链，到达即重置首 token 看门狗。
+        // 注意：当前 ark Coding 端点实测不流式 reasoning（思考在服务端、首内容 token 才出现），
+        // 因此主要靠放宽后的 plan 首 token 超时(45s)兜底；此分支对会流式 reasoning 的端点仍有效。
+        if (firstTokenMs === undefined && extractSseReasoning(line) !== null) {
+          clearTimeout(timer)
+          timer = setTimeout(() => abort.abort(), firstTokenTimeout)
+        }
         const delta = extractSseDelta(line)
         if (delta === null) continue
         if (firstTokenMs === undefined) {
           firstTokenMs = Date.now() - t0
-          clearTimeout(timer) // 首 token 已到，切换总时长兜底
+          clearTimeout(timer) // 首内容 token 已到，切换总时长兜底
           timer = setTimeout(() => abort.abort(), TOTAL_TIMEOUT_MS[body.mode])
         }
         content += delta

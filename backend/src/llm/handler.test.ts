@@ -43,7 +43,7 @@ describe('extractSseDelta', () => {
 })
 
 describe('首 token 超时（协议 §2.3）', () => {
-  it('parse 4s / plan 10s', () => {
+  it('parse 8s / plan 20s（均关思考，首 token 快）', () => {
     expect(FIRST_TOKEN_TIMEOUT_MS.parse).toBe(8000)
     expect(FIRST_TOKEN_TIMEOUT_MS.plan).toBe(20000)
   })
