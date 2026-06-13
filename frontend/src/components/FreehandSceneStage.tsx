@@ -289,10 +289,10 @@ function drawVPath(ctx: CanvasRenderingContext2D, o: SceneObject): void {
   ctx.save()
   if (o.x || o.y) ctx.translate(o.x, o.y)
   if (o.opacity !== undefined) ctx.globalAlpha = o.opacity
-  // 柔和投影：每件极淡阴影 → 贴纸式层次（仅作用填充，描边时关掉防重影）
-  ctx.shadowColor = 'rgba(0,0,0,0.16)'
-  ctx.shadowBlur = 5
-  ctx.shadowOffsetY = 2.5
+  // 柔和投影：每件极淡阴影 → 贴纸式层次（仅作用填充，描边时关掉防重影；接地阴影另补整体落地感）
+  ctx.shadowColor = 'rgba(0,0,0,0.12)'
+  ctx.shadowBlur = 4
+  ctx.shadowOffsetY = 2
   if (o.gradient) {
     const [bx, by, bw, bh] = pathLocalBBox(o.d)
     ctx.fillStyle = linearGrad(ctx, o.gradient, bx, by, bw, bh)
@@ -340,6 +340,37 @@ function bakeObject(ctx: CanvasRenderingContext2D, o: SceneObject): void {
     return
   }
   for (const p of prepareObject(o)) bakeStroke(ctx, p)
+}
+
+/** 主体（全部 vpath）并集包围盒——背景=非 vpath，识别干净 */
+function vpathUnionBBox(objs: SceneObject[]): [number, number, number, number] | null {
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  let any = false
+  for (const o of objs) {
+    if (o.shape !== 'vpath') continue
+    const [bx, by, bw, bh] = getBBox(o)
+    minX = Math.min(minX, bx)
+    minY = Math.min(minY, by)
+    maxX = Math.max(maxX, bx + bw)
+    maxY = Math.max(maxY, by + bh)
+    any = true
+  }
+  return any ? [minX, minY, maxX - minX, maxY - minY] : null
+}
+
+/** 接地阴影：主体脚下一道柔和椭圆影 → 主体"落地"不悬空（专业插画明暗层次）。画在背景之上、主体之下。 */
+function drawGroundShadow(ctx: CanvasRenderingContext2D, bbox: [number, number, number, number]): void {
+  const [x, y, w, h] = bbox
+  ctx.save()
+  ctx.filter = 'blur(7px)'
+  ctx.fillStyle = 'rgba(0,0,0,0.18)'
+  ctx.beginPath()
+  ctx.ellipse(x + w / 2, y + h * 0.99, w * 0.42, Math.max(8, h * 0.05), 0, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.restore()
 }
 
 export interface FreehandCaptureHandle {
@@ -394,7 +425,16 @@ export const FreehandSceneStage = forwardRef<FreehandCaptureHandle, { scene: Sce
         tctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0)
         tctx.fillStyle = PAPER
         tctx.fillRect(0, 0, W, H)
-        for (const o of [...sceneRef.current.objects].sort((a, b) => a.z - b.z)) bakeObject(tctx, o)
+        const objsT = [...sceneRef.current.objects].sort((a, b) => a.z - b.z)
+        const subjT = vpathUnionBBox(objsT)
+        let groundT = false
+        for (const o of objsT) {
+          if (subjT && !groundT && o.shape === 'vpath') {
+            drawGroundShadow(tctx, subjT)
+            groundT = true
+          }
+          bakeObject(tctx, o)
+        }
         return c.toDataURL('image/png')
       },
     }),
@@ -599,7 +639,13 @@ export const FreehandSceneStage = forwardRef<FreehandCaptureHandle, { scene: Sce
     const dpr = dprRef.current
     cctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     cctx.clearRect(0, 0, W, H)
+    const subjBBox = vpathUnionBBox(objs)
+    let groundDrawn = false
     for (const o of objs) {
+      if (subjBBox && !groundDrawn && o.shape === 'vpath') {
+        drawGroundShadow(cctx, subjBBox) // 主体之下、背景之上：落地阴影
+        groundDrawn = true
+      }
       if (!baked.has(o.id)) continue
       bakeObject(cctx, o)
     }
