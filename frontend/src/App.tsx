@@ -5,7 +5,7 @@ import { FreehandSceneStage, type FreehandCaptureHandle } from './components/Fre
 import { DebugPanel, type LogEntry } from './components/DebugPanel'
 import { buildAmbiguityClarify, matchExpecting, type ExpectingItem } from './nlu/clarify'
 import { executeTransaction } from './engine/interpreter'
-import { getBBox, type SceneState } from './engine/scene'
+import { type SceneState } from './engine/scene'
 import { correctTranscript } from './nlu/correction'
 import { parseWithLlm, parseWithLlmStream } from './nlu/llm'
 import { decideMode, extractPlanSubject, parseRule, type RuleContext } from './nlu/rules'
@@ -17,18 +17,6 @@ import { useVoice } from './voice/useVoice'
 
 let logSeq = 0
 
-/** plan 创作后后台自检精修的最多轮数（不追求一次成图，逐轮迭代，VLM 判通过即提前停） */
-const AUTO_CRITIQUE_ROUNDS = 3
-
-/** 视觉质检指令（能力 #27）：修正必须声明式，VLM 像素估读不可靠 */
-const CRITIQUE_INSTRUCTION =
-  '这是当前画布的渲染截图与场景 JSON。请对照检查视觉缺陷：部件错位/悬空/朝向错误/比例失调/不当遮挡。' +
-  '发现缺陷则输出修正 ops（byName/byId 引用现有对象）。修正位置**必须**用相对定位' +
-  '（move.to 的 ref+anchor+offset/inside，参照 scene JSON 里的真实对象；' +
-  '修"部件悬空/没贴上"优先用 "onEdge":true——中心钉到参照真实形状边缘），' +
-  '禁止自己估算绝对 x,y——你的像素估读不可靠；' +
-  "画面没有明显缺陷则 intent:'reject' 且 say:'画面看起来没问题'。"
-
 /** 主动共创建议（v1.7 新颖设计）：画完主动提议一处补充，待用户同意再画 */
 const SUGGEST_INSTRUCTION =
   '这是当前画布的场景 JSON。你是主动的绘画共创伙伴：提议一个能让画面更完整、更生动的小添加' +
@@ -37,23 +25,26 @@ const SUGGEST_INSTRUCTION =
   '例"画面右边有点空，加棵小松树好吗？"）。只提一个最自然的建议；' +
   "若画面已相当完整或不宜再加，则 intent='reject'、ops 为空。"
 
-/** 本地几何预检（免费、确定性）：检出明显超出画布的部件，作为线索喂给视觉自检，纠错更准。
- *  只报"出界"这种高置信缺陷——部件间的重叠多为有意（眼睛在脸上），不在此误报。 */
-function geometricFindings(scene: SceneState): string {
-  const out: string[] = []
-  for (const o of scene.objects) {
-    const [x, y, w, h] = getBBox(o)
-    if (w <= 0 || h <= 0) continue
-    const hOver = Math.max(0, -x) + Math.max(0, x + w - CANVAS_WIDTH)
-    const vOver = Math.max(0, -y) + Math.max(0, y + h - CANVAS_HEIGHT)
-    if (hOver > w * 0.25 || vOver > h * 0.25) out.push(o.name ?? o.id)
+/** 场景持久化键：仅存当前场景快照，刷新后画面保留（undo/redo 历史不持久化，可接受） */
+const SCENE_STORAGE_KEY = 'voicedraw:scene'
+
+/** 初始 history：尝试从 localStorage 恢复上次场景，失败/无存档则回退空场景。
+ *  恢复后撤销/重做栈留空——刷新保住画面即可，丢历史可接受。所有 IO 入 try/catch（SSR/配额/解析安全）。 */
+function loadHistory(): HistoryState {
+  try {
+    const raw = localStorage.getItem(SCENE_STORAGE_KEY)
+    if (raw === null) return createHistory()
+    const scene = JSON.parse(raw) as SceneState
+    // 最低限度校验：是带 objects 数组的对象（脏数据/旧格式直接回退空场景）
+    if (typeof scene !== 'object' || scene === null || !Array.isArray(scene.objects)) return createHistory()
+    return createHistory(scene)
+  } catch {
+    return createHistory()
   }
-  if (out.length === 0) return ''
-  return `部件明显超出画布、需用相对定位移回画布内：${[...new Set(out)].slice(0, 8).join('、')}`
 }
 
 export default function App() {
-  const [history, setHistory] = useState<HistoryState>(createHistory)
+  const [history, setHistory] = useState<HistoryState>(loadHistory)
   const historyRef = useRef(history)
   historyRef.current = history
   const stageRef = useRef<FreehandCaptureHandle | null>(null)
@@ -181,41 +172,6 @@ export default function App() {
     [getTts, pushLog],
   )
 
-  /** 视觉自检修复环：截图 → 多模态质检 → 修正执行，画面通过即停（最多 maxRounds 轮） */
-  const runVisualCheck = useCallback(
-    async (maxRounds: number): Promise<{ rounds: number; fixed: number; clean: boolean }> => {
-      let fixed = 0
-      for (let round = 1; round <= maxRounds; round++) {
-        const cap = stageRef.current
-        if (cap === null) return { rounds: round - 1, fixed, clean: false }
-        const image = cap.toDataURL(1.0) // 干净整幅（无笔/选中框），VLM 看清 ±10px 错位
-        // 本地几何预检线索并入质检指令（出界等高置信缺陷，指引 VLM 更准）
-        const findings = geometricFindings(historyRef.current.scene)
-        const instruction = findings === '' ? CRITIQUE_INSTRUCTION : `${CRITIQUE_INSTRUCTION}\n本地几何预检：${findings}`
-        const llm = await parseWithLlm(instruction, 'parse', { scene: historyRef.current.scene, image })
-        if (!llm.ok) {
-          pushLog('error', `自检第 ${round} 轮失败：${llm.error}`)
-          return { rounds: round, fixed, clean: false }
-        }
-        const res = llm.result
-        if (res.intent !== 'ops' || res.ops.length === 0) {
-          pushLog('info', `自检第 ${round} 轮：画面通过 ✓（${res.latencyMs.toFixed(0)}ms）`)
-          return { rounds: round, fixed, clean: true }
-        }
-        const outcome = execOps(res.ops)
-        const failed = 'error' in outcome && Boolean(outcome.error)
-        pushLog(
-          failed ? 'warn' : 'info',
-          `自检第 ${round} 轮：修正 ${res.ops.length} 处——${res.say ?? ''}（${res.latencyMs.toFixed(0)}ms）`,
-        )
-        if (failed) return { rounds: round, fixed, clean: false }
-        fixed += res.ops.length
-      }
-      return { rounds: maxRounds, fixed, clean: false } // 轮次用尽仍有发现（保守停手防震荡）
-    },
-    [execOps, pushLog],
-  )
-
   /** 共创建议（v1.7）：读当前场景，让 LLM 主动提议一处补充；存起来 + 播报征询 + 弹气泡，待用户回应 */
   const proactiveSuggest = useCallback(async () => {
     const scene = historyRef.current.scene
@@ -232,19 +188,13 @@ export default function App() {
     suggestTimerRef.current = setTimeout(() => clearSuggest(), 25_000) // 久无回应自动撤销建议
   }, [clearSuggest, pushLog, say])
 
-  /** plan 创作完成后：① 后台多轮异步自检精修（不追求一次成图，逐轮"自检→修正"，画面越改越好，
-      VLM 判通过即提前停；本地几何预检并入指引）② 精修后再给一条共创建议。
-      等两帧确保新场景已上屏再截图，否则会截到旧画面。 */
-  const autoCritiqueAfterPlan = useCallback(() => {
+  /** plan 创作完成后：等两帧确保新场景已上屏，再给一条共创建议（基于最终画面）。 */
+  const suggestAfterPlan = useCallback(() => {
     void (async () => {
       await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))
-      if (historyRef.current.scene.objects.length === 0) return
-      pushLog('info', `🔍 创作完成，后台多轮自检精修（最多 ${AUTO_CRITIQUE_ROUNDS} 轮，通过即停）…`)
-      const r = await runVisualCheck(AUTO_CRITIQUE_ROUNDS)
-      pushLog('info', `自检精修完成：${r.rounds} 轮、修正 ${r.fixed} 处${r.clean ? '、画面通过 ✓' : ''}`)
-      await proactiveSuggest() // 精修后基于最终画面提建议
+      await proactiveSuggest()
     })()
-  }, [proactiveSuggest, pushLog, runVisualCheck])
+  }, [proactiveSuggest])
 
   // 最近 3 轮成功指令（协议 §2.2 recent，供 LLM 多轮指代）
   const recentRef = useRef<Array<{ utterance: string; summary: string }>>([])
@@ -325,7 +275,8 @@ export default function App() {
           say(typeof err === 'string' ? '这个操作我没理解，请换个说法' : err.message)
           return false
         }
-        say(sayText)
+        // 只在"画完(本次新增了对象)"时播报完成语；纯编辑/调整/清空过程静默（用户要求：绘画过程不播报）
+        if (ops?.some((o) => o.op === 'create')) say(sayText)
         return true
       }
 
@@ -398,27 +349,6 @@ export default function App() {
         }
       }
 
-      // 视觉自检（"检查一下画面"）：截图喂多模态 LLM，产出修正 Op（按需多模态，仅此处附图）
-      if (/(检查|看看|自检).*(画面|画布)|^自检$/.test(utterance)) {
-        if (historyRef.current.scene.objects.length === 0) {
-          advance(false)
-          say('画布是空的，没什么可检查')
-          return
-        }
-        pushLog('info', '视觉自检：截图 → 多模态 LLM 质检（≤3 轮）…')
-        void (async () => {
-          const r = await runVisualCheck(3)
-          if (r.fixed > 0) {
-            advance(true)
-            say(r.clean ? `修正了 ${r.fixed} 处，画面没问题了` : `修正了 ${r.fixed} 处`)
-          } else {
-            advance(false)
-            say(r.clean ? '画面看起来没问题' : '自检没成功，请再试一次')
-          }
-        })()
-        return
-      }
-
       // 投机缓存的规则结果仅在话语未被澄清联合改写时可复用
       const specReused = spec !== null && utterance === spec.corrected
       const r = specReused ? spec.rule : parseRule(utterance, ruleCtx())
@@ -453,8 +383,8 @@ export default function App() {
             if (painted === 1) voiceApiRef.current?.dispatch('PARSE_DONE')
             historyRef.current = { ...historyRef.current, scene: work }
             setHistory(historyRef.current)
-            // 边画边解说：每画一件即语音播报其 desc（say 内部已写 🔊 日志；TTS 串行排队，与渐进绘制同步推进）
-            if (op.op === 'create' && op.desc !== undefined) say(op.desc)
+            // 绘画过程不语音播报（用户要求）：逐件 desc 仅进日志可见，不朗读；完成语在画完时统一播
+            if (op.op === 'create' && op.desc !== undefined) pushLog('info', `▸ ${op.desc}`)
           })
 
           if (stream.ok && !execFailed) {
@@ -491,9 +421,10 @@ export default function App() {
             if (groupName !== undefined && committed.scene !== work) {
               pushLog('info', `已自动编组「${groupName}」（整组移动/缩放/删除生效）`)
             }
-            say(res.say)
+            // 只在"画完(本次新增了对象)"时播报完成语；纯编辑/调整过程静默（用户要求）
+            if (res.ops.some((o) => o.op === 'create')) say(res.say)
             recordSuccess(utterance, res.ops)
-            if (res.source === 'llm-plan') autoCritiqueAfterPlan() // v1.7：创作完成自动自检一轮
+            if (res.source === 'llm-plan') suggestAfterPlan() // v1.7：创作完成给一条共创建议
             return
           }
 
@@ -555,7 +486,7 @@ export default function App() {
             }
           }
           if (speakOutcome(outcome, res.say, res.ops)) recordSuccess(utterance, res.ops)
-          if (res.source === 'llm-plan' && ok) autoCritiqueAfterPlan() // v1.7：创作完成自动自检一轮
+          if (res.source === 'llm-plan' && ok) suggestAfterPlan() // v1.7：创作完成给一条共创建议
         })()
         return
       }
@@ -576,7 +507,7 @@ export default function App() {
       advance(true)
       if (speakOutcome(execOps(r.ops), r.say, r.ops)) recordSuccess(utterance, r.ops)
     },
-    [autoCritiqueAfterPlan, clearSuggest, execOps, pushLog, recordSuccess, ruleCtx, runVisualCheck, say],
+    [clearSuggest, execOps, pushLog, recordSuccess, ruleCtx, say, suggestAfterPlan],
   )
 
   // 控制台入口与面板共用同一执行通道
@@ -636,6 +567,17 @@ export default function App() {
   }, [])
 
   const scene = history.scene
+
+  // 场景持久化：每次场景变化写入 localStorage（只存场景，不存日志/语音/埋点等瞬态 UI），刷新后画面保留。
+  // 写入入 try/catch（配额超限/SSR 等失败时静默放弃，等同无存档）。
+  useEffect(() => {
+    try {
+      localStorage.setItem(SCENE_STORAGE_KEY, JSON.stringify(scene))
+    } catch {
+      // 忽略：配额满 / 隐私模式禁写 localStorage 时降级为不持久化
+    }
+  }, [scene])
+
   const op = (o: Op) => () => execOps(o)
   const loading = voice.vadStatus === 'loading'
   const errored = voice.vadStatus === 'error'
