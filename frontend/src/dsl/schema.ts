@@ -25,6 +25,7 @@ export const shapeKindSchema = z.enum([
   'text',
   'path',
   'arc', // v1.6 弧/扇形（月牙、风扇、彩虹弧）：outerRadius=size，innerRadius/angle 可选
+  'vpath', // v2.0 贝塞尔矢量路径：d=SVG path data（精细插画，突破图元词汇）；坐标在画布系
 ])
 export type ShapeKind = z.infer<typeof shapeKindSchema>
 
@@ -173,6 +174,7 @@ const createOpSchema = z
     cornerRadius: z.number().nonnegative().optional(), // v1.6 rect 圆角半径（柔化外观）
     innerRadius: z.number().nonnegative().optional(), // v1.6 arc 内半径（>0=圆环弧；0=扇形）
     angle: z.number().optional(), // v1.6 arc 扇形角度（度，缺省 270）
+    d: z.string().min(1).optional(), // v2.0 vpath 的 SVG path data（M/L/C/Q/Z，坐标在画布系）
     desc: z.string().optional(), // plan 模式进度播报文案
   })
   .strict()
@@ -379,6 +381,9 @@ export const opSchema = z
       case 'create':
         if (op.shape === 'text' && !op.text) {
           ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'text 图形必须提供 text 内容', path: ['text'] })
+        }
+        if (op.shape === 'vpath' && !op.d) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'vpath 图形必须提供 d（SVG path data）', path: ['d'] })
         }
         if ((op.from === undefined) !== (op.to === undefined)) {
           ctx.addIssue({ code: z.ZodIssueCode.custom, message: '连接线 from/to 必须成对出现' })

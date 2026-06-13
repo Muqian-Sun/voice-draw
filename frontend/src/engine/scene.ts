@@ -23,6 +23,7 @@ export interface SceneObject {
   angle?: number // v1.6 arc 扇形角度（度）
   points?: number[] // line/polyline/path：相对 (x,y) 的扁平数组 [x1,y1,x2,y2,...]
   tension?: number // v1.7 line/polyline/path 曲线平滑张力（0=折线，0.4~0.5=自然曲线）
+  d?: string // v2.0 vpath 的 SVG path data（画布系绝对坐标；(x,y) 作为平移偏移，缺省 0）
   text?: string
   fontSize?: number
   fill?: string
@@ -92,6 +93,22 @@ export function getBBox(o: SceneObject): [number, number, number, number] {
       const fs = o.fontSize ?? 16
       const w = (o.text?.length ?? 0) * fs
       return [o.x - w / 2, o.y - fs / 2, w, fs * 1.2]
+    }
+    case 'vpath': {
+      // 从 d 抽出全部数值，按 (x,y) 成对取包围盒（限定 M/L/C/Q/Z → 数值皆为坐标）；+ (x,y) 平移偏移
+      const nums = (o.d ?? '').match(/-?\d*\.?\d+/g)?.map(Number) ?? []
+      if (nums.length < 2) return [o.x, o.y, 0, 0]
+      let minX = Infinity
+      let minY = Infinity
+      let maxX = -Infinity
+      let maxY = -Infinity
+      for (let i = 0; i + 1 < nums.length; i += 2) {
+        minX = Math.min(minX, nums[i])
+        maxX = Math.max(maxX, nums[i])
+        minY = Math.min(minY, nums[i + 1])
+        maxY = Math.max(maxY, nums[i + 1])
+      }
+      return [o.x + minX, o.y + minY, maxX - minX, maxY - minY]
     }
     case 'line':
     case 'polyline':

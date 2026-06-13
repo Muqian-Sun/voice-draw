@@ -16,7 +16,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
 import { getStroke } from 'perfect-freehand'
 import { CANVAS_WIDTH, CANVAS_HEIGHT } from '../dsl'
-import type { SceneObject, SceneState } from '../engine/scene'
+import { getBBox, type SceneObject, type SceneState } from '../engine/scene'
 import { objectToStrokes } from '../freehand/fromScene'
 import {
   cumulativeLengths,
@@ -241,6 +241,147 @@ function prepareObject(o: SceneObject): Prepared[] {
   return objectToStrokes(o).map((s, i) => prepareStroke(s, (o.z + 1) * 0x9e3779b1 + i))
 }
 
+/** 线性渐变（schema：angle 0=左→右 90=上→下），跨给定 bbox 铺设 */
+function linearGrad(
+  ctx: CanvasRenderingContext2D,
+  g: NonNullable<SceneObject['gradient']>,
+  bx: number,
+  by: number,
+  bw: number,
+  bh: number,
+): CanvasGradient {
+  const rad = ((g.angle ?? 90) * Math.PI) / 180
+  const cx = bx + bw / 2
+  const cy = by + bh / 2
+  const dx = (Math.cos(rad) * bw) / 2
+  const dy = (Math.sin(rad) * bh) / 2
+  const grad = ctx.createLinearGradient(cx - dx, cy - dy, cx + dx, cy + dy)
+  grad.addColorStop(0, g.from)
+  grad.addColorStop(1, g.to)
+  return grad
+}
+
+/** 从 d 抽坐标算局部包围盒（限定 M/L/C/Q/Z），供渐变铺设 */
+function pathLocalBBox(d: string): [number, number, number, number] {
+  const nums = d.match(/-?\d*\.?\d+/g)?.map(Number) ?? []
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  for (let i = 0; i + 1 < nums.length; i += 2) {
+    minX = Math.min(minX, nums[i])
+    maxX = Math.max(maxX, nums[i])
+    minY = Math.min(minY, nums[i + 1])
+    maxY = Math.max(maxY, nums[i + 1])
+  }
+  return Number.isFinite(minX) ? [minX, minY, maxX - minX, maxY - minY] : [0, 0, 0, 0]
+}
+
+/** v2.0 vpath：清晰矢量渲染（Path2D 填充+描边）+ 真渐变 + 柔和投影（贴纸级层次，确定性精修）。 */
+function drawVPath(ctx: CanvasRenderingContext2D, o: SceneObject): void {
+  if (!o.d) return
+  let path: Path2D
+  try {
+    path = new Path2D(o.d)
+  } catch {
+    return // d 语法非法 → 跳过（不崩）
+  }
+  ctx.save()
+  if (o.x || o.y) ctx.translate(o.x, o.y) // move：平移偏移
+  if (o.rotation) {
+    // rotate：绕 d 包围盒中心旋转（getBBox 按 §5.5 不计旋转，与图元一致）
+    const [bx, by, bw, bh] = pathLocalBBox(o.d)
+    const cx = bx + bw / 2
+    const cy = by + bh / 2
+    ctx.translate(cx, cy)
+    ctx.rotate((o.rotation * Math.PI) / 180)
+    ctx.translate(-cx, -cy)
+  }
+  if (o.opacity !== undefined) ctx.globalAlpha = o.opacity
+  // 柔和投影：每件极淡阴影 → 贴纸式层次（仅作用填充，描边时关掉防重影；接地阴影另补整体落地感）
+  ctx.shadowColor = 'rgba(0,0,0,0.12)'
+  ctx.shadowBlur = 4
+  ctx.shadowOffsetY = 2
+  if (o.gradient) {
+    const [bx, by, bw, bh] = pathLocalBBox(o.d)
+    ctx.fillStyle = linearGrad(ctx, o.gradient, bx, by, bw, bh)
+    ctx.fill(path)
+  } else if (o.fill) {
+    ctx.fillStyle = o.fill
+    ctx.fill(path)
+  }
+  if (o.stroke) {
+    ctx.shadowColor = 'transparent'
+    ctx.strokeStyle = o.stroke
+    ctx.lineWidth = o.strokeWidth ?? 2
+    ctx.lineJoin = 'round'
+    ctx.lineCap = 'round'
+    ctx.stroke(path)
+  }
+  ctx.restore()
+}
+
+/** 渐变大色块（天空/草地等背景）走清晰渐变填充（非手绘）——比纯色/手绘更精致 */
+function drawCrispFill(ctx: CanvasRenderingContext2D, o: SceneObject): void {
+  const [bx, by, bw, bh] = getBBox(o)
+  ctx.save()
+  if (o.opacity !== undefined) ctx.globalAlpha = o.opacity
+  ctx.fillStyle = o.gradient ? linearGrad(ctx, o.gradient, bx, by, bw, bh) : (o.fill ?? '#ffffff')
+  const r = o.cornerRadius ?? 0
+  if (r > 0 && typeof ctx.roundRect === 'function') {
+    ctx.beginPath()
+    ctx.roundRect(bx, by, bw, bh, r)
+    ctx.fill()
+  } else {
+    ctx.fillRect(bx, by, bw, bh)
+  }
+  ctx.restore()
+}
+
+/** 把一个对象完整画到 ctx：vpath/渐变背景走清晰矢量（含渐变+投影），其余图元走手绘笔触烘焙 */
+function bakeObject(ctx: CanvasRenderingContext2D, o: SceneObject): void {
+  if (o.shape === 'vpath') {
+    drawVPath(ctx, o)
+    return
+  }
+  if (o.gradient && o.shape === 'rect') {
+    drawCrispFill(ctx, o) // 渐变背景：清晰渐变（天空/草地）
+    return
+  }
+  for (const p of prepareObject(o)) bakeStroke(ctx, p)
+}
+
+/** 主体（全部 vpath）并集包围盒——背景=非 vpath，识别干净 */
+function vpathUnionBBox(objs: SceneObject[]): [number, number, number, number] | null {
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  let any = false
+  for (const o of objs) {
+    if (o.shape !== 'vpath') continue
+    const [bx, by, bw, bh] = getBBox(o)
+    minX = Math.min(minX, bx)
+    minY = Math.min(minY, by)
+    maxX = Math.max(maxX, bx + bw)
+    maxY = Math.max(maxY, by + bh)
+    any = true
+  }
+  return any ? [minX, minY, maxX - minX, maxY - minY] : null
+}
+
+/** 接地阴影：主体脚下一道柔和椭圆影 → 主体"落地"不悬空（专业插画明暗层次）。画在背景之上、主体之下。 */
+function drawGroundShadow(ctx: CanvasRenderingContext2D, bbox: [number, number, number, number]): void {
+  const [x, y, w, h] = bbox
+  ctx.save()
+  ctx.filter = 'blur(7px)'
+  ctx.fillStyle = 'rgba(0,0,0,0.18)'
+  ctx.beginPath()
+  ctx.ellipse(x + w / 2, y + h * 0.99, w * 0.42, Math.max(8, h * 0.05), 0, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.restore()
+}
+
 export interface FreehandCaptureHandle {
   /** 渲染干净整幅（无笔尖/选中框）→ PNG dataURL，供导出与视觉自检 */
   toDataURL: (pixelRatio?: number) => string
@@ -293,8 +434,15 @@ export const FreehandSceneStage = forwardRef<FreehandCaptureHandle, { scene: Sce
         tctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0)
         tctx.fillStyle = PAPER
         tctx.fillRect(0, 0, W, H)
-        for (const o of [...sceneRef.current.objects].sort((a, b) => a.z - b.z)) {
-          for (const p of prepareObject(o)) bakeStroke(tctx, p)
+        const objsT = [...sceneRef.current.objects].sort((a, b) => a.z - b.z)
+        const subjT = vpathUnionBBox(objsT)
+        let groundT = false
+        for (const o of objsT) {
+          if (subjT && !groundT && o.shape === 'vpath') {
+            drawGroundShadow(tctx, subjT)
+            groundT = true
+          }
+          bakeObject(tctx, o)
         }
         return c.toDataURL('image/png')
       },
@@ -479,6 +627,16 @@ export const FreehandSceneStage = forwardRef<FreehandCaptureHandle, { scene: Sce
     for (const o of objs) {
       const sig = sigOf(o)
       if (baked.get(o.id) === sig) continue // 已落定且未变
+      // 即时烘焙（不走逐笔动画）：vpath 清晰矢量 + 背景（渐变矩形/满宽大矩形）。
+      // 关键修复：背景 z 最低，若走动画队列会在主体（已即时落定）之后铺满、把主体盖掉（"画一半清空"）；
+      // 故背景一律即时落定，按 z 序排在主体之下。逐笔动画只留给前景小图元。
+      const instant = o.shape === 'vpath' || (o.shape === 'rect' && (o.gradient !== undefined || getBBox(o)[2] >= 0.85 * W))
+      if (instant) {
+        const qv = queueRef.current.findIndex((q) => q.id === o.id)
+        if (qv >= 0) queueRef.current.splice(qv, 1)
+        baked.set(o.id, sig)
+        continue
+      }
       const a = animRef.current
       if (a && a.id === o.id && a.sig === sig) continue // 正在画且一致
       const qi = queueRef.current.findIndex((q) => q.id === o.id)
@@ -493,9 +651,15 @@ export const FreehandSceneStage = forwardRef<FreehandCaptureHandle, { scene: Sce
     const dpr = dprRef.current
     cctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     cctx.clearRect(0, 0, W, H)
+    const subjBBox = vpathUnionBBox(objs)
+    let groundDrawn = false
     for (const o of objs) {
+      if (subjBBox && !groundDrawn && o.shape === 'vpath') {
+        drawGroundShadow(cctx, subjBBox) // 主体之下、背景之上：落地阴影
+        groundDrawn = true
+      }
       if (!baked.has(o.id)) continue
-      for (const p of prepareObject(o)) bakeStroke(cctx, p)
+      bakeObject(cctx, o)
     }
 
     // 重启循环：播放新增/改动对象的逐笔动画；无新活时也渲一帧（更新选中框/抹除）

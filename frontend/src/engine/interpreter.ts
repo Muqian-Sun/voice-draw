@@ -237,6 +237,8 @@ function buildGeometry(state: SceneState, op: CreateOp): GeometryResult {
     }
     case 'text':
       return { ok: true, geo: { text: op.text, fontSize: op.fontSize ?? Math.max(16, 0.5 * v) } }
+    case 'vpath':
+      return { ok: true, geo: {} } // vpath 在 execCreateResolved 顶部已早返回，不会到这（防御性）
   }
 }
 
@@ -289,16 +291,42 @@ function pickGeometry(o: SceneObject): Partial<SceneObject> {
     if (o[k] !== undefined) out[k] = o[k]
   }
   if (o.points) out.points = o.points
+  if (o.d) out.d = o.d // vpath：d 即几何，resize 经 scaleGeometry 缩放
   return out
 }
 
 /** 等比缩放几何字段（§5.5 对象大于画布时） */
+/** 缩放 vpath 的 d 坐标（绕其包围盒中心，factor s）——resize vpath 用（d 即几何，scale d=就地变大小）。
+ *  限定绝对 M/L/C/Q/Z：所有数值即 x,y,x,y… 序列。 */
+function scalePathD(d: string, s: number): string {
+  const nums = d.match(/-?\d*\.?\d+/g)?.map(Number) ?? []
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  for (let i = 0; i + 1 < nums.length; i += 2) {
+    minX = Math.min(minX, nums[i])
+    maxX = Math.max(maxX, nums[i])
+    minY = Math.min(minY, nums[i + 1])
+    maxY = Math.max(maxY, nums[i + 1])
+  }
+  const cx = (minX + maxX) / 2
+  const cy = (minY + maxY) / 2
+  let n = 0
+  return d.replace(/-?\d*\.?\d+/g, (m) => {
+    const c = n % 2 === 0 ? cx : cy
+    n++
+    return String(c + (parseFloat(m) - c) * s)
+  })
+}
+
 function scaleGeometry(geo: Partial<SceneObject>, s: number): Partial<SceneObject> {
   const out: Partial<SceneObject> = { ...geo }
   for (const k of ['radius', 'innerRadius', 'radiusX', 'radiusY', 'width', 'height', 'fontSize'] as const) {
     if (out[k] !== undefined) out[k] = out[k]! * s
   }
   if (out.points) out.points = out.points.map((p) => p * s)
+  if (out.d) out.d = scalePathD(out.d, s) // vpath：缩放 d 坐标
   return out
 }
 
@@ -418,7 +446,42 @@ function execCreate(state: SceneState, op: CreateOp): OpResult {
   return execCreateResolved(state, opEff)
 }
 
+// v2.0 vpath：贝塞尔矢量路径。d 为画布系绝对坐标，(x,y) 作平移偏移（缺省 0）；
+// 不走 size/几何/clamp 逻辑（与图元根本不同），直接建命名场景对象。
+function execCreateVpath(state: SceneState, op: CreateOp): OpResult {
+  const shapeSeq = (state.seqByShape.vpath ?? 0) + 1
+  const id = `vpath#${shapeSeq}`
+  const maxZ = state.objects.reduce((m, o) => Math.max(m, o.z), 0)
+  const obj: SceneObject = {
+    id,
+    ...(op.name ? { name: op.name } : {}),
+    shape: 'vpath',
+    x: 0,
+    y: 0,
+    d: op.d,
+    ...(op.gradient ? { gradient: op.gradient } : op.fill ? { fill: op.fill } : {}),
+    ...(op.stroke ? { stroke: op.stroke } : {}),
+    ...(op.strokeWidth ? { strokeWidth: op.strokeWidth } : {}),
+    ...(op.opacity !== undefined ? { opacity: op.opacity } : {}),
+    ...(op.shadow !== undefined && op.shadow !== false ? { shadow: resolveShadow(op.shadow) } : {}),
+    rotation: op.rotation ?? 0,
+    z: maxZ + 1,
+    createdSeq: state.seq + 1,
+  }
+  return {
+    ok: true,
+    state: {
+      objects: [...state.objects, obj],
+      focusId: id,
+      focusScope: 'object',
+      seq: state.seq + 1,
+      seqByShape: { ...state.seqByShape, vpath: shapeSeq },
+    },
+  }
+}
+
 function execCreateResolved(state: SceneState, op: CreateOp): OpResult {
+  if (op.shape === 'vpath') return execCreateVpath(state, op)
   const geo = buildGeometry(state, op)
   if (!geo.ok) return geo
 
@@ -498,6 +561,18 @@ function patchObject(state: SceneState, id: string, patch: Partial<SceneObject>)
     focusId: id, // 焦点规则 §5.1：修改类操作 → 焦点 = 被操作对象
     focusScope: 'object', // 编辑单个对象 → 焦点粒度=对象（后续"它"指该对象，非整组）
   }
+}
+
+/** 反射 SVG path d 的坐标（用于 vpath 镜像）：d 限定绝对命令 M/L/C/Q/Z，
+ *  所有数值即 x,y,x,y,… 序列——vertical 反射 x（x'=2cx-x），horizontal 反射 y。命令字母原样保留。 */
+function reflectPathD(d: string, cx: number, cy: number, vertical: boolean): string {
+  let n = 0
+  return d.replace(/-?\d*\.?\d+/g, (m) => {
+    const isX = n % 2 === 0
+    n++
+    if (vertical) return isX ? String(2 * cx - parseFloat(m)) : m
+    return isX ? m : String(2 * cy - parseFloat(m))
+  })
 }
 
 function execOp(state: SceneState, op: Op): OpResult {
@@ -775,16 +850,23 @@ function execOp(state: SceneState, op: Op): OpResult {
       const shapeSeq = (state.seqByShape[o.shape] ?? 0) + 1
       const id = `${o.shape}#${shapeSeq}`
       const maxZ = state.objects.reduce((m, x) => Math.max(m, x.z), 0)
+      const isVpath = o.shape === 'vpath' && o.d !== undefined
       const mirrored: SceneObject = {
         ...o,
         id,
         ...(op.name !== undefined ? { name: op.name } : o.name !== undefined ? { name: `${o.name}-镜像` } : {}),
-        x: vertical ? 2 * c.x - o.x : o.x,
-        y: vertical ? o.y : 2 * c.y - o.y,
-        rotation: ((-o.rotation % 360) + 360) % 360,
-        ...(o.points !== undefined
-          ? { points: o.points.map((v, i) => (vertical ? (i % 2 === 0 ? -v : v) : i % 2 === 0 ? v : -v)) }
-          : {}),
+        // vpath：d 是绝对坐标 → 逐点反射 d（x'=2cx-x），保持 0 偏移、rotation 不反（反射已并入 d）；
+        // 图元：反射 position（+ points 相对坐标取负、rotation 取负）
+        ...(isVpath
+          ? { d: reflectPathD(o.d as string, c.x, c.y, vertical) }
+          : {
+              x: vertical ? 2 * c.x - o.x : o.x,
+              y: vertical ? o.y : 2 * c.y - o.y,
+              rotation: ((-o.rotation % 360) + 360) % 360,
+              ...(o.points !== undefined
+                ? { points: o.points.map((v, i) => (vertical ? (i % 2 === 0 ? -v : v) : i % 2 === 0 ? v : -v)) }
+                : {}),
+            }),
         z: maxZ + 1,
         createdSeq: state.seq + 1,
       }
