@@ -118,3 +118,49 @@ export function tipAt(points: Pt[], cum: number[], L: number): { pt: Pt; angle: 
 
 // 变宽墨带轮廓改由 perfect-freehand 的 getStroke 生成（尖角不夹断、含笔帽/收笔/速度模拟压感），
 // 原朴素 ribbonOutline/widthProfile 已移除（见 FreehandStage.paintStroke）。
+
+/** 确定性伪随机 mulberry32：同 seed → 同序列。用它而非 Math.random，使手绘抖动逐帧稳定（不闪）、可单测 */
+export function mulberry32(seed: number): () => number {
+  let a = seed >>> 0
+  return () => {
+    a = (a + 0x6d2b79f5) | 0
+    let t = Math.imul(a ^ (a >>> 15), 1 | a)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+/**
+ * 手绘抖动（借 Rough.js 技法，无三方依赖）：每段插入一个**垂向偏移的弓形中点** + 轻扰角点，
+ * 让直线/多边形边也"弯一点"像手画；幅度随边长温和增长并设上限（短边不过弯、长边不失控）。
+ * 确定性（seed 驱动 mulberry32）→ 同一笔每帧一致、不闪。roughness<=0 原样返回。
+ * 输出再交给 sampleCenterline（平滑）或 densifyLinear（保棱角）。
+ */
+export function roughen(pts: Pt[], closed: boolean, roughness: number, seed = 1): Pt[] {
+  if (roughness <= 0 || pts.length < 2) return pts.slice()
+  const rng = mulberry32(seed)
+  const r = () => rng() * 2 - 1 // [-1,1]
+  const n = pts.length
+  const segs = closed ? n : n - 1
+  const out: Pt[] = []
+  for (let s = 0; s < segs; s++) {
+    const a = pts[s]
+    const b = pts[(s + 1) % n]
+    out.push([a[0] + r() * roughness * 0.5, a[1] + r() * roughness * 0.5]) // 轻扰角点
+    const dx = b[0] - a[0]
+    const dy = b[1] - a[1]
+    const len = Math.hypot(dx, dy) || 1
+    const px = -dy / len // 垂向单位向量
+    const py = dx / len
+    const bow = r() * Math.min(roughness * 1.6, len * 0.06) // 弓形量，按边长限幅
+    out.push([
+      (a[0] + b[0]) / 2 + px * bow + r() * roughness * 0.4,
+      (a[1] + b[1]) / 2 + py * bow + r() * roughness * 0.4,
+    ])
+  }
+  if (!closed) {
+    const last = pts[n - 1]
+    out.push([last[0] + r() * roughness * 0.5, last[1] + r() * roughness * 0.5])
+  }
+  return out
+}

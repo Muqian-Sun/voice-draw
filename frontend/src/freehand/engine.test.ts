@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { getStroke } from 'perfect-freehand'
-import { cumulativeLengths, densifyLinear, sampleCenterline, sliceUpTo, tipAt, type Pt } from './engine'
+import { cumulativeLengths, densifyLinear, mulberry32, roughen, sampleCenterline, sliceUpTo, tipAt, type Pt } from './engine'
 
 describe('自由画笔引擎', () => {
   it('sampleCenterline：稠密化且过首尾锚点；<2 点原样', () => {
@@ -65,6 +65,28 @@ describe('自由画笔引擎', () => {
     expect(dense.length).toBeGreaterThan(pts.length)
     expect(dense[0]).toEqual([0, 0])
     expect(dense[dense.length - 1]).toEqual([0, 0]) // 闭合回首点
+  })
+
+  it('mulberry32：同 seed 同序列、确定性（手绘抖动逐帧不闪的前提）', () => {
+    const a = mulberry32(42)
+    const b = mulberry32(42)
+    expect([a(), a(), a()]).toEqual([b(), b(), b()])
+    expect(mulberry32(1)()).not.toEqual(mulberry32(2)())
+  })
+
+  it('roughen：roughness=0 原样；否则插弓形中点、同 seed 确定性', () => {
+    const pts: Pt[] = [
+      [0, 0],
+      [100, 0],
+      [100, 100],
+    ]
+    expect(roughen(pts, false, 0)).toEqual(pts) // 不抖
+    const r1 = roughen(pts, false, 3, 7)
+    const r2 = roughen(pts, false, 3, 7)
+    expect(r1).toEqual(r2) // 同 seed 一致（不闪）
+    expect(r1.length).toBe(pts.length * 2 - 1) // 开放：每段 角+中点，末补角点
+    expect(roughen(pts, true, 3, 7).length).toBe(pts.length * 2) // 闭合：每段 角+中点
+    expect(r1.every((p) => Number.isFinite(p[0]) && Number.isFinite(p[1]))).toBe(true)
   })
 
   it('perfect-freehand getStroke：输入点 → 非空轮廓多边形（依赖接入冒烟）', () => {

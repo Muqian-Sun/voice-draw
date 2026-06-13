@@ -9,6 +9,7 @@ import { getStroke } from 'perfect-freehand'
 import {
   cumulativeLengths,
   densifyLinear,
+  roughen,
   sampleCenterline,
   sliceUpTo,
   tipAt,
@@ -60,9 +61,11 @@ const lerp = (a: Pt, b: Pt, t: number): Pt => [a[0] + (b[0] - a[0]) * t, a[1] + 
 export function FreehandStage({
   strokes = CAT_DEMO,
   title,
+  roughness = 2.5,
 }: {
   strokes?: Stroke[]
   title?: string
+  roughness?: number // 手绘抖动幅度 px（0=不抖，几何图元也带手画弓形感）
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const [runId, setRunId] = useState(0)
@@ -78,10 +81,12 @@ export function FreehandStage({
     cv.height = H * dpr
     setDone(false)
 
-    const prep: Prepared[] = strokes.map((s) => {
+    const prep: Prepared[] = strokes.map((s, i) => {
+      // 先手绘抖动（确定性 seed=笔序，逐帧稳定），再平滑/稠密化
+      const anchors = roughen(s.pts, s.closed ?? false, roughness, i * 0x9e3779b1 + 1)
       // smooth=false（多边形/矩形）走线性稠密化保棱角；否则向心 CR 平滑
       const pts =
-        s.smooth === false ? densifyLinear(s.pts, s.closed ?? false, 7) : sampleCenterline(s.pts, s.closed ?? false, 18)
+        s.smooth === false ? densifyLinear(anchors, s.closed ?? false, 7) : sampleCenterline(anchors, s.closed ?? false, 18)
       const cum = cumulativeLengths(pts)
       return { s, pts, cum, total: cum[cum.length - 1] }
     })
@@ -229,7 +234,7 @@ export function FreehandStage({
 
     raf = requestAnimationFrame(frame)
     return () => cancelAnimationFrame(raf)
-  }, [runId, strokes])
+  }, [runId, strokes, roughness])
 
   return (
     <div
