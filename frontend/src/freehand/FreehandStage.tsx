@@ -81,6 +81,15 @@ export function FreehandStage({
     cv.height = H * dpr
     setDone(false)
 
+    // 已完成的笔提交到离屏画布（每笔只画一次）；逐帧只重绘"当前正在画的一笔"+笔尖，
+    // 开销恒定、不随笔数增长 → 不再一卡一卡（此前每帧对所有完成笔都重跑 getStroke+填充）
+    const committed = document.createElement('canvas')
+    committed.width = W * dpr
+    committed.height = H * dpr
+    const cctx = committed.getContext('2d')
+    if (!cctx) return
+    cctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+
     const prep: Prepared[] = strokes.map((s, i) => {
       // 先手绘抖动（确定性 seed=笔序，逐帧稳定），再平滑/稠密化
       const anchors = roughen(s.pts, s.closed ?? false, roughness, i * 0x9e3779b1 + 1)
@@ -100,23 +109,23 @@ export function FreehandStage({
     let last = 0
     let raf = 0
 
-    const paintStroke = (p: Prepared, L: number) => {
+    const paintStroke = (tctx: CanvasRenderingContext2D, p: Prepared, L: number) => {
       const slice = sliceUpTo(p.pts, p.cum, L)
       if (slice.length < 2) return
       if (p.s.closed && L >= p.total) {
         // 闭合完成：先填充内部，再描墨边
-        ctx.beginPath()
-        ctx.moveTo(p.pts[0][0], p.pts[0][1])
-        for (const pt of p.pts) ctx.lineTo(pt[0], pt[1])
-        ctx.closePath()
+        tctx.beginPath()
+        tctx.moveTo(p.pts[0][0], p.pts[0][1])
+        for (const pt of p.pts) tctx.lineTo(pt[0], pt[1])
+        tctx.closePath()
         if (p.s.fill) {
-          ctx.fillStyle = p.s.fill
-          ctx.fill()
+          tctx.fillStyle = p.s.fill
+          tctx.fill()
         }
-        ctx.lineWidth = p.s.width ?? 6
-        ctx.strokeStyle = p.s.color ?? INK
-        ctx.lineJoin = 'round'
-        ctx.stroke()
+        tctx.lineWidth = p.s.width ?? 6
+        tctx.strokeStyle = p.s.color ?? INK
+        tctx.lineJoin = 'round'
+        tctx.stroke()
         return
       }
       // 开放笔画（或闭合显墨中）：perfect-freehand 生成轮廓。
@@ -136,12 +145,12 @@ export function FreehandStage({
         end: { cap: !taper, taper: taper ? w * 2.5 : 0 },
       })
       if (outline.length < 3) return
-      ctx.beginPath()
-      ctx.moveTo(outline[0][0], outline[0][1])
-      for (const pt of outline) ctx.lineTo(pt[0], pt[1])
-      ctx.closePath()
-      ctx.fillStyle = p.s.color ?? INK
-      ctx.fill()
+      tctx.beginPath()
+      tctx.moveTo(outline[0][0], outline[0][1])
+      for (const pt of outline) tctx.lineTo(pt[0], pt[1])
+      tctx.closePath()
+      tctx.fillStyle = p.s.color ?? INK
+      tctx.fill()
     }
 
     const drawPen = (pos: Pt, lifted: boolean) => {
@@ -184,14 +193,12 @@ export function FreehandStage({
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
       ctx.fillStyle = '#f6f0e4'
       ctx.fillRect(0, 0, W, H)
-      // 已完成的笔（travel 时含刚画完、尚未自增 strokeI 的当前笔——否则换行间隙它会短暂消失）
-      const doneCount = mode === 'end' ? prep.length : mode === 'travel' ? strokeI + 1 : strokeI
-      for (let i = 0; i < doneCount; i++) paintStroke(prep[i], prep[i].total)
-      // 笔尖位置
+      ctx.drawImage(committed, 0, 0, W, H) // 已完成的笔（离屏，每笔只画一次）一次性贴上
+      // 仅重绘当前正在画的一笔 + 笔尖
       let penPos: Pt = penFrom
       let lifted = false
       if (mode === 'draw' && strokeI < prep.length) {
-        paintStroke(prep[strokeI], drawn)
+        paintStroke(ctx, prep[strokeI], drawn)
         penPos = tipAt(prep[strokeI].pts, prep[strokeI].cum, drawn).pt
       } else if (mode === 'travel') {
         penPos = lerp(penFrom, penTo, ease(Math.min(1, travelT)))
@@ -209,6 +216,7 @@ export function FreehandStage({
         const cur = prep[strokeI]
         if (drawn >= cur.total) {
           drawn = cur.total
+          paintStroke(cctx, cur, cur.total) // 完成即提交离屏层（travel/后续帧持续显示，无间隙、不重算）
           penFrom = cur.pts[cur.pts.length - 1]
           const next = prep[strokeI + 1]
           if (next) {
