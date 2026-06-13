@@ -45,7 +45,7 @@ export function DebugPanel({ entries, onSubmit, onUndo, onRedo, onClear }: Debug
 
   return (
     <aside className="debug-panel">
-      <div className="debug-panel-title">调试面板</div>
+      <div className="debug-panel-title">Console · 调试面板</div>
       <textarea
         className="debug-input"
         value={text}
@@ -71,6 +71,9 @@ export function DebugPanel({ entries, onSubmit, onUndo, onRedo, onClear }: Debug
         {entries.length === 0 && <div className="debug-log-empty">事件日志为空——执行一条指令试试</div>}
         {[...entries].reverse().map((e) => (
           <div key={e.id} className={`debug-log-entry debug-log-${e.level}`}>
+            <span className="debug-log-glyph" aria-hidden>
+              {e.level === 'error' ? '✕' : e.level === 'warn' ? '!' : '›'}
+            </span>
             <span className="debug-log-time">{e.time}</span>
             <span>{e.text}</span>
           </div>
