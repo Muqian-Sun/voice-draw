@@ -5,10 +5,10 @@
  * 访问 http://localhost:5174/?freehand 查看。
  */
 import { useEffect, useRef, useState } from 'react'
+import { getStroke } from 'perfect-freehand'
 import {
   cumulativeLengths,
   densifyLinear,
-  ribbonOutline,
   sampleCenterline,
   sliceUpTo,
   tipAt,
@@ -98,7 +98,6 @@ export function FreehandStage({
     const paintStroke = (p: Prepared, L: number) => {
       const slice = sliceUpTo(p.pts, p.cum, L)
       if (slice.length < 2) return
-      const sliceCum = cumulativeLengths(slice)
       if (p.s.closed && L >= p.total) {
         // 闭合完成：先填充内部，再描墨边
         ctx.beginPath()
@@ -115,8 +114,19 @@ export function FreehandStage({
         ctx.stroke()
         return
       }
-      // 开放笔画（或闭合显墨中）：变宽墨带填充
-      const outline = ribbonOutline(slice, sliceCum, p.total, p.s.width ?? 8, p.s.taper ?? true)
+      // 开放笔画（或闭合显墨中）：perfect-freehand 生成变宽墨带轮廓（尖角不夹断、含笔帽/收笔/速度模拟压感）
+      const w = p.s.width ?? 8
+      const taper = p.s.taper !== false
+      const outline = getStroke(slice as number[][], {
+        size: w,
+        thinning: taper ? 0.55 : 0.2,
+        smoothing: 0.5,
+        streamline: 0.15,
+        simulatePressure: true,
+        last: L >= p.total,
+        start: { cap: !taper, taper: taper ? w * 3 : 0 },
+        end: { cap: !taper, taper: taper ? w * 3 : 0 },
+      })
       if (outline.length < 3) return
       ctx.beginPath()
       ctx.moveTo(outline[0][0], outline[0][1])
