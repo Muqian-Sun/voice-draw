@@ -73,6 +73,7 @@ GOLDEN_LIVE=1 pnpm test golden                # B3/B4 真实 LLM 实跑（需 ba
 | dotenv | backend 环境变量加载 |
 | tsx | TS 直跑（backend 开发期 + 前端 Prompt 生成脚本） |
 | concurrently | 一条命令并行启动前后端 |
+| Google Fonts（CDN 网页字体，非 npm 依赖） | 界面排版字体：展示标题 Syne · 编辑衬线 Fraunces · 数据等宽 Spline Sans Mono · 手写标识 Shantell Sans · 手写体 Caveat（由 `frontend/index.html` 的 `<link>` 加载） |
 
 > 新增依赖随对应 PR 同步更新本表。
 
