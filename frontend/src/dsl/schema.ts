@@ -123,6 +123,24 @@ export const sizeSpecSchema = z.union([
 ])
 export type SizeSpec = z.infer<typeof sizeSpecSchema>
 
+/** v1.7 投影：true=默认柔和投影；对象可调 color/blur/offset/opacity（false 由理解层省略表达） */
+export const shadowSchema = z.union([
+  z.boolean(),
+  z
+    .object({
+      color: colorSchema.optional(),
+      blur: z.number().nonnegative().optional(),
+      offset: vec2Schema.optional(),
+      opacity: z.number().min(0).max(1).optional(),
+    })
+    .strict(),
+])
+export type ShadowSpec = z.infer<typeof shadowSchema>
+
+/** v1.7 纹理：在 fill 底色上叠加暗纹（衣纹/砖墙/鳞片/毛感）。仅闭合可填充形状 */
+export const patternSchema = z.enum(['stripes', 'dots', 'grid', 'hatch', 'cross'])
+export type PatternKind = z.infer<typeof patternSchema>
+
 // ---------- 操作指令集（协议 §1.4） ----------
 // 注意：discriminatedUnion 要求成员为纯 ZodObject，跨字段约束统一放在 opSchema.superRefine。
 
@@ -136,6 +154,9 @@ const createOpSchema = z
     width: sizeSpecSchema.optional(), // 显式宽高优先于 size
     height: sizeSpecSchema.optional(),
     points: z.array(vec2Schema).min(2).optional(), // line/polyline/path 用
+    // v1.7 曲线平滑（line/polyline/path）：Catmull-Rom 张力，0=折线(缺省) 0.4~0.5=自然曲线——
+    // 有机轮廓（云/水波/花瓣/树冠/头发/动物身体）用它把直线段拉成顺滑曲线
+    tension: z.number().min(0).max(1).optional(),
     // v1.5 连接线（仅 line）：端点各自贴到 from/to 对象的真实边缘（朝向彼此），与 points/at 互斥
     from: targetSelectorSchema.optional(),
     to: targetSelectorSchema.optional(),
@@ -146,6 +167,8 @@ const createOpSchema = z
     stroke: colorSchema.optional(),
     strokeWidth: z.number().positive().optional(),
     opacity: z.number().min(0).max(1).optional(), // v1.6 半透明（云/阴影/光晕），创建即可设
+    shadow: shadowSchema.optional(), // v1.7 投影（立体/精致感）
+    pattern: patternSchema.optional(), // v1.7 纹理填充（叠在 fill 底色上）
     rotation: z.number().optional(), // 角度，顺时针为正
     cornerRadius: z.number().nonnegative().optional(), // v1.6 rect 圆角半径（柔化外观）
     innerRadius: z.number().nonnegative().optional(), // v1.6 arc 内半径（>0=圆环弧；0=扇形）
@@ -164,6 +187,7 @@ const styleOpSchema = z
     stroke: colorSchema.optional(),
     strokeWidth: z.number().positive().optional(),
     opacity: z.number().min(0).max(1).optional(),
+    shadow: shadowSchema.optional(), // v1.7 给/去投影（"给它加个阴影"）
   })
   .strict()
 

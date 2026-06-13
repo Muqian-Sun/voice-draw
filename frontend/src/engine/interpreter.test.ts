@@ -18,8 +18,24 @@ describe('create（规格 §2.4 几何换算 / §5.1 焦点）', () => {
     expect(o.id).toBe('circle#1')
     expect(o.radius).toBe(80)
     expect([o.x, o.y]).toEqual([512, 384])
-    expect(o.fill).toBe('#4B5563')
+    expect(o.fill).toBe('#2D7DD2')
     expect(s.focusId).toBe('circle#1')
+  })
+
+  it('v1.7 投影 shadow:true → 默认柔和投影；pattern → 纹理（仅闭合形状）', () => {
+    const s = run([{ op: 'create', shape: 'rect', width: 100, height: 80, fill: '#FF4136', shadow: true, pattern: 'stripes' }])
+    const o = s.objects[0]
+    expect(o.shadow).toEqual({ color: '#1a1410', blur: 14, offsetX: 0, offsetY: 7, opacity: 0.3 })
+    expect(o.pattern).toBe('stripes')
+  })
+
+  it('v1.7 投影对象形式并入缺省；style shadow:false 去阴影；线类忽略 pattern', () => {
+    let s = run([{ op: 'create', shape: 'circle', name: '球', fill: '#0074D9', shadow: { blur: 20, offset: [3, 9] } }])
+    expect(s.objects[0].shadow).toEqual({ color: '#1a1410', blur: 20, offsetX: 3, offsetY: 9, opacity: 0.3 })
+    s = run([{ op: 'style', target: { byName: '球' }, shadow: false }], s)
+    expect(s.objects[0].shadow).toBeUndefined()
+    const l = run([{ op: 'create', shape: 'line', points: [[0, 0], [40, 0]], pattern: 'dots' }])
+    expect(l.objects[0].pattern).toBeUndefined() // 线类不吃 pattern
   })
 
   it('语义尺寸 large 矩形：宽 320 高 240（2v × 1.5v），(x,y) 为中心', () => {
