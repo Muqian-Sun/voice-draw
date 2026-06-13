@@ -4,7 +4,7 @@ import { commitIncremental, createHistory, executeWithHistory, type HistoryOutco
 import { FreehandSceneStage, type FreehandCaptureHandle } from './components/FreehandSceneStage'
 import { DebugPanel, type LogEntry } from './components/DebugPanel'
 import { buildAmbiguityClarify, matchExpecting, type ExpectingItem } from './nlu/clarify'
-import { executeTransaction } from './engine/interpreter'
+import { createForwardTolerantRunner } from './engine/forwardRetry'
 import { type SceneState } from './engine/scene'
 import { correctTranscript } from './nlu/correction'
 import { parseWithLlm, parseWithLlmStream } from './nlu/llm'
@@ -366,26 +366,29 @@ export default function App() {
           // v1.4 流式渐进绘制优先：LLM 边写边画（首个部件 ~2s 可见）；
           // 终验失败 → 回滚画布 → 落回下方缓冲模式（自带一次重试）
           const base = historyRef.current
-          let work = base.scene
           let painted = 0
-          let execFailed = false
-          const stream = await parseWithLlmStream(utterance, mode, llmCtx, (op) => {
-            if (execFailed) return
-            const r2 = executeTransaction(work, [op])
-            if (r2.error !== undefined) {
-              execFailed = true
-              pushLog('warn', `渐进绘制中断：${r2.error.code} ${r2.error.message}`)
-              return
-            }
-            work = r2.state
+          // 流式前向引用容忍（修复"画一半→画布清空→过一会完整重贴"）：LLM 不保证严格
+          // "先创建后引用"，乱序到达的 at.ref/mirror/连线 op 单 op 执行会报 TARGET_NOT_FOUND。
+          // runner 把这类 op 暂存、待依赖创建后重试，不再因单个前向引用整幅中止+回滚+二次 LLM 调用。
+          const runner = createForwardTolerantRunner(base.scene, (op, state) => {
             painted += 1
             // 首个部件上屏即把状态从"解析中"切到"执行中(绘制)"，避免长流期间一直显示"解析中"
             if (painted === 1) voiceApiRef.current?.dispatch('PARSE_DONE')
-            historyRef.current = { ...historyRef.current, scene: work }
+            historyRef.current = { ...historyRef.current, scene: state }
             setHistory(historyRef.current)
             // 绘画过程不语音播报（用户要求）：逐件 desc 仅进日志可见，不朗读；完成语在画完时统一播
             if (op.op === 'create' && op.desc !== undefined) pushLog('info', `▸ ${op.desc}`)
           })
+          const stream = await parseWithLlmStream(utterance, mode, llmCtx, (op) => runner.push(op))
+          const fin = runner.finish()
+          const work = fin.state
+          // 硬错误（非前向引用）或流毕仍有悬空引用 → 流式未完成，回退缓冲重解
+          const execFailed = fin.hardError !== undefined || fin.pending.length > 0
+          if (fin.hardError !== undefined) {
+            pushLog('warn', `渐进绘制中断：${fin.hardError.code} ${fin.hardError.message}`)
+          } else if (fin.pending.length > 0) {
+            pushLog('warn', `渐进绘制：${fin.pending.length} 个 op 引用了未出现的对象 → 回退缓冲重解`)
+          }
 
           if (stream.ok && !execFailed) {
             const res = stream.result
