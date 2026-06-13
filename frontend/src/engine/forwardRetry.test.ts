@@ -13,7 +13,7 @@ describe('forwardRetry — 流式前向引用容忍', () => {
     r.push(head)
     r.push(eye)
     const fin = r.finish()
-    expect(fin.hardError).toBeUndefined()
+    expect(fin.skipped).toHaveLength(0)
     expect(fin.pending).toHaveLength(0)
     expect(fin.state.objects.map((o) => o.name).sort()).toEqual(['头', '眼'])
   })
@@ -23,7 +23,7 @@ describe('forwardRetry — 流式前向引用容忍', () => {
     r.push(eye) // 头 不存在 → TARGET_NOT_FOUND → 暂存
     r.push(head) // 应用 → flush 重试 眼 → 应用
     const fin = r.finish()
-    expect(fin.hardError).toBeUndefined()
+    expect(fin.skipped).toHaveLength(0)
     expect(fin.pending).toHaveLength(0)
     expect(fin.state.objects).toHaveLength(2)
   })
@@ -57,7 +57,7 @@ describe('forwardRetry — 流式前向引用容忍', () => {
     const r = createForwardTolerantRunner(createEmptyScene())
     r.push(ghost)
     const fin = r.finish()
-    expect(fin.hardError).toBeUndefined()
+    expect(fin.skipped).toHaveLength(0)
     expect(fin.pending).toHaveLength(1)
     expect(fin.state.objects).toHaveLength(0)
   })
@@ -75,5 +75,21 @@ describe('forwardRetry — 流式前向引用容忍', () => {
     const names = fin.state.objects.map((o) => o.name)
     expect(names).toHaveLength(3)
     expect(names).toEqual(expect.arrayContaining(['左耳', '头', '右耳']))
+  })
+
+  it('歧义 op（AMBIGUOUS_TARGET）软跳过：保留已画部分、不清空整幅（核心回归）', () => {
+    // 模拟"持久化场景里画布已有同名对象"：两个都叫"圆"，随后某 op 按名引用 → 歧义
+    const c1: Op = { op: 'create', shape: 'circle', name: '圆', at: { x: 200, y: 200 }, size: 40 }
+    const c2: Op = { op: 'create', shape: 'circle', name: '圆', at: { x: 400, y: 200 }, size: 40 }
+    const styleAmbig: Op = { op: 'style', target: { byName: '圆' }, fill: '#FF4136' } // style 非 preferRecent → 2 命中歧义
+    const r = createForwardTolerantRunner(createEmptyScene())
+    r.push(c1)
+    r.push(c2)
+    r.push(styleAmbig) // 歧义 → 软跳过，不中止
+    const fin = r.finish()
+    expect(fin.skipped).toHaveLength(1)
+    expect(fin.skipped[0].error.code).toBe('AMBIGUOUS_TARGET')
+    expect(fin.pending).toHaveLength(0)
+    expect(fin.state.objects).toHaveLength(2) // 两个圆仍在，未被清空
   })
 })

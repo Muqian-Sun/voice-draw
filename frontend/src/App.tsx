@@ -363,13 +363,13 @@ export default function App() {
             lastTransaction: lastTxRef.current,
           }
 
-          // v1.4 流式渐进绘制优先：LLM 边写边画（首个部件 ~2s 可见）；
-          // 终验失败 → 回滚画布 → 落回下方缓冲模式（自带一次重试）
+          // v1.4 流式渐进绘制优先：LLM 边写边画（首个部件 ~2s 可见）
           const base = historyRef.current
           let painted = 0
-          // 流式前向引用容忍（修复"画一半→画布清空→过一会完整重贴"）：LLM 不保证严格
-          // "先创建后引用"，乱序到达的 at.ref/mirror/连线 op 单 op 执行会报 TARGET_NOT_FOUND。
-          // runner 把这类 op 暂存、待依赖创建后重试，不再因单个前向引用整幅中止+回滚+二次 LLM 调用。
+          // 流式容错（修复"画一半→画布清空→过一会完整重贴"）：单 op 执行失败绝不清空整幅。
+          // ① 前向引用（TARGET_NOT_FOUND，LLM 乱序）→ runner 暂存待依赖创建后重试；
+          // ② 同名歧义（AMBIGUOUS_TARGET，持久化场景里新主体部件名与旧的撞车，如末尾 group）
+          //    → 软跳过该 op（plan 的 group 跳过无妨，commit 时 autoGroup 仍编组），保留已画部分。
           const runner = createForwardTolerantRunner(base.scene, (op, state) => {
             painted += 1
             // 首个部件上屏即把状态从"解析中"切到"执行中(绘制)"，避免长流期间一直显示"解析中"
@@ -382,13 +382,12 @@ export default function App() {
           const stream = await parseWithLlmStream(utterance, mode, llmCtx, (op) => runner.push(op))
           const fin = runner.finish()
           const work = fin.state
-          // 硬错误（非前向引用）或流毕仍有悬空引用 → 流式未完成，回退缓冲重解
-          const execFailed = fin.hardError !== undefined || fin.pending.length > 0
-          if (fin.hardError !== undefined) {
-            pushLog('warn', `渐进绘制中断：${fin.hardError.code} ${fin.hardError.message}`)
-          } else if (fin.pending.length > 0) {
-            pushLog('warn', `渐进绘制：${fin.pending.length} 个 op 引用了未出现的对象 → 回退缓冲重解`)
+          if (fin.skipped.length > 0 || fin.pending.length > 0) {
+            const s = fin.skipped.map((x) => x.error.code)
+            pushLog('warn', `流式渐进：跳过 ${fin.skipped.length} 个失败 op${s.length ? `（${[...new Set(s)].join('/')}）` : ''}、${fin.pending.length} 个悬空引用——保留已绘制部分，不清空`)
           }
+          // 只有"一件都没画成"或流本身失败(stream.ok=false) 才回退缓冲；画成任意部件即提交（不再因单 op 失败清空重贴）
+          const execFailed = painted === 0
 
           if (stream.ok && !execFailed) {
             const res = stream.result

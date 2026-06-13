@@ -897,7 +897,7 @@ function execOp(state: SceneState, op: Op): OpResult {
       // v1.5 中心对齐：全部对象在 axis 上的中心对齐到首个目标
       const objs: SceneObject[] = []
       for (const sel of op.targets) {
-        const t = resolveTarget(state, sel)
+        const t = resolveTarget(state, sel, true) // 构造类引用 preferRecent（同 group/§5.1 #79）
         if (!t.ok) return t
         objs.push(t.obj)
       }
@@ -915,7 +915,7 @@ function execOp(state: SceneState, op: Op): OpResult {
       // v1.5 等距分布：按 axis 排序后首尾不动，中间对象中心平均分布
       const objs: SceneObject[] = []
       for (const sel of op.targets) {
-        const t = resolveTarget(state, sel)
+        const t = resolveTarget(state, sel, true) // 构造类引用 preferRecent（同 group/§5.1 #79）
         if (!t.ok) return t
         objs.push(t.obj)
       }
@@ -943,7 +943,9 @@ function execOp(state: SceneState, op: Op): OpResult {
     case 'group': {
       const objs: SceneObject[] = []
       for (const sel of op.targets) {
-        const t = resolveTarget(state, sel)
+        // 构造类引用 preferRecent（§5.1 #79）：plan 末尾 group 自己刚画的部件时，
+        // 若画布已有同名旧对象（如持久化场景里上一幅的"左眼/身体"），取最近创建的（本次的）
+        const t = resolveTarget(state, sel, true)
         if (!t.ok) return t
         for (const m of membersOf(state, t.obj)) {
           if (!objs.some((x) => x.id === m.id)) objs.push(m) // 已在组内的成员并入新组

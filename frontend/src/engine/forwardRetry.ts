@@ -1,19 +1,23 @@
 /**
- * 流式渐进绘制 · 前向引用容忍执行（修复"画一半画布清空、过一会完整重贴"）
+ * 流式渐进绘制 · 容错执行（修复"画一半画布清空、过一会完整重贴"）
  * =====================================================================
  * 背景：plan 流式时逐 op 到达即用 executeTransaction 单 op 推进可见场景（渐进出图）。
- * 但 LLM 不保证严格"先创建后引用"——某个 create(at.ref/between)、mirror(about/target)、
- * 连接线(from/to)、相对尺寸(relativeTo)、zorder(above/below) 可能在它引用的对象之前到达。
- * 单 op 执行此时报 TARGET_NOT_FOUND。旧逻辑把它当致命错误：整幅渐进中止 → setHistory(base)
- * 回滚清空 → 再发第二次完整 LLM 调用兜底（用户可见"画一半 → 清空 → 过一会完整贴出"）。
+ * 旧逻辑里**任何单 op 执行失败都会整幅中止 → setHistory(base) 回滚清空 → 再发第二次
+ * 完整 LLM 调用兜底贴出**（用户可见"画一半 → 清空 → 过一会完整贴出"）。两类失败常见：
  *
- * 本 runner 让乱序可恢复：TARGET_NOT_FOUND 的 op 暂存，每成功应用一个 op 就重试暂存队列
- * （一个新对象可能解锁链式暂存）；其它错误码（INVALID_OP / 越界等）视为硬失败立即停，
- * 交上层回退。流毕仍悬空的 op 留在 pending（真·悬空引用），同样由上层决定回退。
+ *  1) 前向引用（TARGET_NOT_FOUND）：LLM 不保证严格"先创建后引用"，某个
+ *     at.ref/mirror.about/连线/相对尺寸/zorder 在它引用的对象之前到达；
+ *  2) 同名歧义（AMBIGUOUS_TARGET）：画布已有同名对象时（v2.0 场景持久化：画完一幅、
+ *     刷新后再画新主体，新主体部件名"左眼/身体"与旧的撞车），plan 末尾的 group 等
+ *     非 preferRecent 引用按名解析命中多个 → 歧义。
  *
- * 与缓冲路径的关系：executeTransaction 严格顺序、首错即停，不容忍批内前向引用；
- * 缓冲兜底之所以常能成功，是因为它重发了一次 LLM（通常这次顺序对了），而非引擎容错。
- * 本 runner 把容错下沉到流式执行本身，消除常见乱序触发的清空 + 二次调用。
+ * 本 runner 让流式执行容错、**绝不因单 op 失败清空整幅**：
+ *  - TARGET_NOT_FOUND 的 op 暂存（pending），每成功应用一个 op 就重试暂存队列
+ *    （链式依赖逐层解锁）；流毕仍悬空的留 pending（真·悬空引用，仅记日志、不清空）。
+ *  - 其它错误（AMBIGUOUS_TARGET / INVALID_OP 等）的 op 软跳过（skipped），保留已画部分、
+ *    继续后续 op；plan 的显式 group 即便被跳过也无妨——commit 时 autoGroup 仍会编组。
+ *
+ * 上层据此**总是提交已成功绘制的部分**（painted>0 即提交），不再回滚 + 二次 LLM 调用。
  */
 import type { Op } from '../dsl'
 import { executeTransaction, type EngineError } from './interpreter'
@@ -24,12 +28,12 @@ export interface ForwardTolerantResult {
   state: SceneState
   /** 流毕仍无法解析（依赖始终未创建）的 op，非空即"真·悬空引用" */
   pending: Op[]
-  /** 首个非 TARGET_NOT_FOUND 的硬错误（出现即停止后续）；undefined 表示无硬错误 */
-  hardError?: EngineError
+  /** 因非前向引用错误（歧义/非法等）被软跳过的 op 及其错误（仅记录，不影响其余绘制） */
+  skipped: Array<{ op: Op; error: EngineError }>
 }
 
 export interface ForwardTolerantRunner {
-  /** 流式到达一个 op：可应用即应用（并触发暂存重试）；TARGET_NOT_FOUND 暂存；其它错误硬停 */
+  /** 流式到达一个 op：可应用即应用（并触发暂存重试）；前向引用暂存；其它错误软跳过 */
   push: (op: Op) => void
   /** 流结束：对暂存队列做最后一轮重试，返回最终态 */
   finish: () => ForwardTolerantResult
@@ -46,7 +50,7 @@ export function createForwardTolerantRunner(
 ): ForwardTolerantRunner {
   let state = initial
   const pending: Op[] = []
-  let hardError: EngineError | undefined
+  const skipped: Array<{ op: Op; error: EngineError }> = []
 
   // 试应用单个 op：成功则推进 state + 回调并返回 undefined；失败返回错误（不改 state）
   const apply1 = (op: Op): EngineError | undefined => {
@@ -60,9 +64,9 @@ export function createForwardTolerantRunner(
   // 重试暂存队列直到无新进展（链式依赖：A 创建后解锁 B，B 再解锁 C）
   const flush = (): void => {
     let progressed = true
-    while (progressed && pending.length > 0 && hardError === undefined) {
+    while (progressed && pending.length > 0) {
       progressed = false
-      for (let i = 0; i < pending.length && hardError === undefined; ) {
+      for (let i = 0; i < pending.length; ) {
         const e = apply1(pending[i])
         if (e === undefined) {
           pending.splice(i, 1)
@@ -70,8 +74,10 @@ export function createForwardTolerantRunner(
         } else if (e.code === 'TARGET_NOT_FOUND') {
           i++ // 依赖仍未创建，继续暂存
         } else {
-          hardError = e // 依赖已就位但另有硬错误 → 浮出，停止
+          // 依赖已就位但另有错误（歧义等）→ 软跳过，不卡住队列、不清空整幅
+          skipped.push({ op: pending[i], error: e })
           pending.splice(i, 1)
+          progressed = true
         }
       }
     }
@@ -79,19 +85,18 @@ export function createForwardTolerantRunner(
 
   return {
     push(op) {
-      if (hardError !== undefined) return // 已硬失败：忽略后续（上层将回退）
       const e = apply1(op)
       if (e === undefined) {
         flush() // 新对象可能解锁此前暂存的前向引用
       } else if (e.code === 'TARGET_NOT_FOUND') {
         pending.push(op) // 疑似前向引用：暂存待依赖创建
       } else {
-        hardError = e // 其它错误：硬失败，交上层回退
+        skipped.push({ op, error: e }) // 歧义/非法等：软跳过，保留已画部分继续
       }
     },
     finish() {
-      if (hardError === undefined) flush()
-      return { state, pending: [...pending], hardError }
+      flush()
+      return { state, pending: [...pending], skipped: [...skipped] }
     },
   }
 }
