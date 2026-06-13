@@ -34,7 +34,9 @@ app.get('/healthz', (_req, res) => {
 })
 
 app.post('/api/llm/parse', handleLlmParse) // 协议 §2：LLM 转发（密钥隔离）
-app.post('/api/tts', handleTts) // 协议 §3：TTS 转发（豆包语音合成 1.0）
+// 协议 §3：TTS 转发（豆包语音合成 2.0，分块流式）。GET 供前端 <audio src> 渐进播放，POST 兼容旧契约
+app.get('/api/tts', handleTts)
+app.post('/api/tts', handleTts)
 
 const server = createServer(app)
 attachAsrGateway(server) // ws://host:PORT/asr（协议 §3.2）
