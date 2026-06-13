@@ -30,16 +30,23 @@ export interface UseVoiceOptions {
   onPartial?: (text: string) => void
 }
 
-const RING_SIZE = 4 // 句首回填帧数（约 128ms，与 VAD preSpeechPadMs 对齐）
+// 句首回填帧数（Silero v5 帧 32ms × 10 ≈ 320ms）。VAD 在语音真正起始之后才触发，
+// 回填不足会吃掉首字／首音节导致识别不准——加宽到 ~320ms 把句首补回，与 preSpeechPadMs 对齐。
+const RING_SIZE = 10
 const FINAL_TIMEOUT_MS = 4000
+const IDLE_SLEEP_MS = 120_000 // 常听无声 2 分钟自动休眠（降误触/省心；ASR 本就按段计费，休眠主要防长挂误触）
 
 export function useVoice({ onLog, onUtterance, onPartial }: UseVoiceOptions) {
   const [state, setState] = useState<VoiceState>('idle')
   const [vadStatus, setVadStatus] = useState<VadStatus>('idle')
   const [providerName, setProviderName] = useState('gateway')
   const [subtitle, setSubtitle] = useState<Subtitle | null>(null)
+  const [hearing, setHearing] = useState(false) // 当前是否正听到人声（onSpeechStart~End），供主控球实时反馈
+  const [asleep, setAsleep] = useState(false) // 无声自动休眠（区别于用户主动静音），供 UI 文案
 
   const vadRef = useRef<MicVadLike | null>(null)
+  const loadingRef = useRef(false) // VAD 初始化中，防自动启动 + 点击/StrictMode 重复建麦
+  const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const providerRef = useRef<AsrProvider | null>(null)
   const speakingRef = useRef(false)
   const ttsActiveRef = useRef(false) // 半双工互斥：TTS 播报期间丢弃麦克风帧（防自激）
@@ -75,12 +82,29 @@ export function useVoice({ onLog, onUtterance, onPartial }: UseVoiceOptions) {
     }
   }, [dispatch])
 
+  /** 无声休眠计时：常听期间 IDLE_SLEEP_MS 无人声 → 暂停 VAD（仅在真正空闲态触发；处理中跳过本次） */
+  const armIdle = useCallback(() => {
+    if (idleTimerRef.current) clearTimeout(idleTimerRef.current)
+    idleTimerRef.current = setTimeout(() => {
+      idleTimerRef.current = null
+      if (stateRef.current !== 'listening') return // 解析/播报中：本次不休眠，下次开口会重置计时
+      vadRef.current?.pause()
+      speakingRef.current = false
+      setHearing(false)
+      setAsleep(true)
+      setSubtitle(null)
+      dispatch('STOP_LISTEN')
+      onLog('info', '长时间无声，已自动休眠麦克风（点麦克风唤醒）')
+    }, IDLE_SLEEP_MS)
+  }, [dispatch, onLog])
+
   /** TTS 编排回调：播报开始/结束切换拾音门控（协议 §3 半双工约束） */
   const setTtsActive = useCallback((active: boolean) => {
     ttsActiveRef.current = active
     if (active) {
       // 播报开始时若正处说话段，丢弃该段（混入了扬声器声音）
       speakingRef.current = false
+      setHearing(false)
       ringRef.current = []
     }
   }, [])
@@ -134,9 +158,13 @@ export function useVoice({ onLog, onUtterance, onPartial }: UseVoiceOptions) {
     ensureProvider()
     if (vadRef.current) {
       vadRef.current.start()
+      setAsleep(false)
       dispatch('START_LISTEN')
+      armIdle()
       return
     }
+    if (loadingRef.current) return // 初始化进行中，忽略重复启动（自动启动 + StrictMode/点击）
+    loadingRef.current = true
     setVadStatus('loading')
     onLog('info', '加载 Silero VAD（本地 WASM）…')
     try {
@@ -148,10 +176,12 @@ export function useVoice({ onLog, onUtterance, onPartial }: UseVoiceOptions) {
         // 协议 §3.2：静音 ~500ms 切段
         redemptionMs: 512,
         minSpeechMs: 96,
-        preSpeechPadMs: 128,
+        preSpeechPadMs: 320, // 句首留白，配合 RING_SIZE 回填，避免首字被吃
         onSpeechStart: () => {
           if (ttsActiveRef.current) return // 半双工：播报期间不开识别会话
           speakingRef.current = true
+          setHearing(true)
+          armIdle() // 有人声 → 重置无声休眠计时
           const p = ensureProvider()
           p.startSession()
           for (const f of ringRef.current) p.pushAudio(f) // 句首回填
@@ -170,6 +200,7 @@ export function useVoice({ onLog, onUtterance, onPartial }: UseVoiceOptions) {
         onSpeechEnd: (audio: Float32Array) => {
           if (!speakingRef.current) return // 播报门控丢弃的段，不进解析
           speakingRef.current = false
+          setHearing(false)
           const ms = Math.round(audio.length / 16)
           onLog('info', `🎤 断句：${ms}ms，等待转写…`)
           providerRef.current?.endSession()
@@ -182,6 +213,7 @@ export function useVoice({ onLog, onUtterance, onPartial }: UseVoiceOptions) {
         },
         onVADMisfire: () => {
           speakingRef.current = false
+          setHearing(false)
           providerRef.current?.endSession()
           onLog('warn', 'VAD 误触发（语音过短，已丢弃）')
         },
@@ -189,30 +221,37 @@ export function useVoice({ onLog, onUtterance, onPartial }: UseVoiceOptions) {
       vadRef.current = vad
       vad.start()
       setVadStatus('ready')
+      setAsleep(false)
       dispatch('START_LISTEN')
-      onLog('info', 'VAD 就绪，开始聆听（约 500ms 静音自动断句）')
+      armIdle()
+      onLog('info', '已开启常听：随时开口自动识别，停顿约 500ms 自动断句')
     } catch (e) {
       setVadStatus('error')
       const msg = (e as Error)?.message ?? String(e)
       onLog(
         'error',
         msg.includes('Permission') || msg.includes('NotAllowed')
-          ? '麦克风权限被拒绝：请在浏览器地址栏允许麦克风后重试'
+          ? '麦克风权限被拒绝：请在浏览器地址栏允许麦克风后，点麦克风重试'
           : `VAD 初始化失败：${msg}`,
       )
+    } finally {
+      loadingRef.current = false
     }
-  }, [dispatch, ensureProvider, finishTurn, onLog])
+  }, [armIdle, dispatch, ensureProvider, finishTurn, onLog])
 
   const stop = useCallback(() => {
+    if (idleTimerRef.current) clearTimeout(idleTimerRef.current)
     vadRef.current?.pause()
     speakingRef.current = false
+    setHearing(false)
+    setAsleep(false) // 主动静音，非休眠
     setSubtitle(null)
     dispatch('STOP_LISTEN')
-    onLog('info', '已停止聆听')
+    onLog('info', '已静音（点麦克风恢复常听）')
   }, [dispatch, onLog])
 
   /** 回调中取当前状态（React state 闭包滞后，FSM 决策须用 ref） */
   const getState = useCallback(() => stateRef.current, [])
 
-  return { state, vadStatus, providerName, subtitle, start, stop, dispatch, setTtsActive, getState }
+  return { state, vadStatus, providerName, subtitle, hearing, asleep, start, stop, dispatch, setTtsActive, getState }
 }
