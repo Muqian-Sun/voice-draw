@@ -173,8 +173,9 @@ export function useVoice({ onLog, onUtterance, onPartial }: UseVoiceOptions) {
         baseAssetPath: '/vad/',
         onnxWASMBasePath: '/vad/',
         model: 'v5',
-        // 协议 §3.2：静音 ~500ms 切段
-        redemptionMs: 512,
+        // 协议 §3.2：静音 ~1s 切段。原 512ms 太激进——编辑长句（"把左边那只眼睛…变大一点"）
+        // 中间自然停顿就被切断、转写残缺 → 看着像"听不懂"。放宽到 ~1s 容忍句中停顿、等用户说完。
+        redemptionMs: 1000,
         minSpeechMs: 96,
         preSpeechPadMs: 320, // 句首留白，配合 RING_SIZE 回填，避免首字被吃
         onSpeechStart: () => {
