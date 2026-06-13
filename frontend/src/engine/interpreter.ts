@@ -537,6 +537,18 @@ function patchObject(state: SceneState, id: string, patch: Partial<SceneObject>)
   }
 }
 
+/** 反射 SVG path d 的坐标（用于 vpath 镜像）：d 限定绝对命令 M/L/C/Q/Z，
+ *  所有数值即 x,y,x,y,… 序列——vertical 反射 x（x'=2cx-x），horizontal 反射 y。命令字母原样保留。 */
+function reflectPathD(d: string, cx: number, cy: number, vertical: boolean): string {
+  let n = 0
+  return d.replace(/-?\d*\.?\d+/g, (m) => {
+    const isX = n % 2 === 0
+    n++
+    if (vertical) return isX ? String(2 * cx - parseFloat(m)) : m
+    return isX ? m : String(2 * cy - parseFloat(m))
+  })
+}
+
 function execOp(state: SceneState, op: Op): OpResult {
   switch (op.op) {
     case 'create':
@@ -812,16 +824,23 @@ function execOp(state: SceneState, op: Op): OpResult {
       const shapeSeq = (state.seqByShape[o.shape] ?? 0) + 1
       const id = `${o.shape}#${shapeSeq}`
       const maxZ = state.objects.reduce((m, x) => Math.max(m, x.z), 0)
+      const isVpath = o.shape === 'vpath' && o.d !== undefined
       const mirrored: SceneObject = {
         ...o,
         id,
         ...(op.name !== undefined ? { name: op.name } : o.name !== undefined ? { name: `${o.name}-镜像` } : {}),
-        x: vertical ? 2 * c.x - o.x : o.x,
-        y: vertical ? o.y : 2 * c.y - o.y,
-        rotation: ((-o.rotation % 360) + 360) % 360,
-        ...(o.points !== undefined
-          ? { points: o.points.map((v, i) => (vertical ? (i % 2 === 0 ? -v : v) : i % 2 === 0 ? v : -v)) }
-          : {}),
+        // vpath：d 是绝对坐标 → 逐点反射 d（x'=2cx-x），保持 0 偏移、rotation 不反（反射已并入 d）；
+        // 图元：反射 position（+ points 相对坐标取负、rotation 取负）
+        ...(isVpath
+          ? { d: reflectPathD(o.d as string, c.x, c.y, vertical) }
+          : {
+              x: vertical ? 2 * c.x - o.x : o.x,
+              y: vertical ? o.y : 2 * c.y - o.y,
+              rotation: ((-o.rotation % 360) + 360) % 360,
+              ...(o.points !== undefined
+                ? { points: o.points.map((v, i) => (vertical ? (i % 2 === 0 ? -v : v) : i % 2 === 0 ? v : -v)) }
+                : {}),
+            }),
         z: maxZ + 1,
         createdSeq: state.seq + 1,
       }

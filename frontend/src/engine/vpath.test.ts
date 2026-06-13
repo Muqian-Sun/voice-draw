@@ -45,6 +45,23 @@ describe('vpath：贝塞尔矢量路径', () => {
     expect(bh).toBe(240)
   })
 
+  it('mirror：vpath 逐点反射 d 坐标（不再整条平移错位）', () => {
+    const parsed = parseOps([
+      { op: 'create', shape: 'circle', name: '躯干', at: { x: 50, y: 0 }, size: 10 },
+      { op: 'create', shape: 'vpath', name: '左', d: 'M0 0 L100 0 L100 40 Z' },
+      { op: 'mirror', target: { byName: '左' }, about: { byName: '躯干' }, name: '右' },
+    ])
+    expect(parsed.ok).toBe(true)
+    if (!parsed.ok) return
+    const { state } = executeTransaction(createEmptyScene(), parsed.ops)
+    const right = state.objects.find((o) => o.name === '右')
+    expect(right?.shape).toBe('vpath')
+    expect(right?.x).toBe(0) // 0 偏移（不再是 2*cx 的平移错位）
+    expect(right?.y).toBe(0)
+    // 关于 cx=50 竖直反射：x'=100-x；y 不变 → 'M100 0 L0 0 L0 40 Z'
+    expect(right?.d).toBe('M100 0 L0 0 L0 40 Z')
+  })
+
   it('多条命名 vpath：各自独立、按创建顺序 z 递增（插画=多命名 path）', () => {
     const parsed = parseOps([
       { op: 'create', shape: 'vpath', name: '身体', d: D },
