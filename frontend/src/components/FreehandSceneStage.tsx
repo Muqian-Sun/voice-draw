@@ -618,8 +618,11 @@ export const FreehandSceneStage = forwardRef<FreehandCaptureHandle, { scene: Sce
     for (const o of objs) {
       const sig = sigOf(o)
       if (baked.get(o.id) === sig) continue // 已落定且未变
-      // vpath：清晰矢量、即时烘焙（不走逐笔动画），直接标记已落定，由下方 committed 重建画出
-      if (o.shape === 'vpath') {
+      // 即时烘焙（不走逐笔动画）：vpath 清晰矢量 + 背景（渐变矩形/满宽大矩形）。
+      // 关键修复：背景 z 最低，若走动画队列会在主体（已即时落定）之后铺满、把主体盖掉（"画一半清空"）；
+      // 故背景一律即时落定，按 z 序排在主体之下。逐笔动画只留给前景小图元。
+      const instant = o.shape === 'vpath' || (o.shape === 'rect' && (o.gradient !== undefined || getBBox(o)[2] >= 0.85 * W))
+      if (instant) {
         const qv = queueRef.current.findIndex((q) => q.id === o.id)
         if (qv >= 0) queueRef.current.splice(qv, 1)
         baked.set(o.id, sig)
