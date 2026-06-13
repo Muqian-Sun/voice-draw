@@ -51,12 +51,29 @@ interface Prepared {
   pts: Pt[]
   cum: number[]
   total: number
+  bbox: [number, number, number, number] // [x,y,w,h]，填色用
 }
 
 const SPEED = 400 // 运笔速度 px/s（适中观感，便于看清绘制过程）
 const TRAVEL_S = 0.3 // 抬笔换行时长
+const FILL_DOWN_SPEED = 150 // 填色时填充前沿下移速度 px/s（"慢慢填"，按形高定时长）
+const FILL_SWEEP_GAP = 26 // 填色笔来回扫动的行距 px（决定来回次数）
 const ease = (t: number) => t * t * (3 - 2 * t)
 const lerp = (a: Pt, b: Pt, t: number): Pt => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
+
+function bboxOf(pts: Pt[]): [number, number, number, number] {
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  for (const [x, y] of pts) {
+    if (x < minX) minX = x
+    if (x > maxX) maxX = x
+    if (y < minY) minY = y
+    if (y > maxY) maxY = y
+  }
+  return [minX, minY, maxX - minX, maxY - minY]
+}
 
 export function FreehandStage({
   strokes = CAT_DEMO,
@@ -97,35 +114,51 @@ export function FreehandStage({
       const pts =
         s.smooth === false ? densifyLinear(anchors, s.closed ?? false, 7) : sampleCenterline(anchors, s.closed ?? false, 18)
       const cum = cumulativeLengths(pts)
-      return { s, pts, cum, total: cum[cum.length - 1] }
+      return { s, pts, cum, total: cum[cum.length - 1], bbox: bboxOf(pts) }
     })
 
     let strokeI = 0
     let drawn = 0
-    let mode: 'draw' | 'travel' | 'end' = 'draw'
+    let mode: 'draw' | 'fill' | 'travel' | 'end' = 'draw'
     let travelT = 0
+    let fillFr = 0 // 当前笔填色进度 0~1
     let penFrom: Pt = prep[0].pts[0]
     let penTo: Pt = prep[0].pts[0]
     let last = 0
     let raf = 0
 
+    const fillable = (p: Prepared) => Boolean(p.s.closed && p.s.fill)
+    const fillDur = (p: Prepared) => Math.max(0.35, p.bbox[3] / FILL_DOWN_SPEED) // 按形高定填色时长
+    // 用笔填色：clip 到形状内，自上而下推进填充前沿（实心覆盖、无缝），笔在前沿来回扫动
+    const fillClosed = (tctx: CanvasRenderingContext2D, p: Prepared, fr: number) => {
+      if (!p.s.fill) return
+      const [bx, by, bw, bh] = p.bbox
+      tctx.save()
+      tctx.beginPath()
+      tctx.moveTo(p.pts[0][0], p.pts[0][1])
+      for (let k = 1; k < p.pts.length; k++) tctx.lineTo(p.pts[k][0], p.pts[k][1])
+      tctx.closePath()
+      tctx.clip()
+      tctx.fillStyle = p.s.fill
+      tctx.fillRect(bx - 1, by - 1, bw + 2, bh * Math.min(1, fr) + 1)
+      tctx.restore()
+    }
+    // 填色时笔尖位置：在当前填充前沿上来回扫动（蛇形），像在涂色
+    const fillPen = (p: Prepared, fr: number): Pt => {
+      const [bx, by, bw, bh] = p.bbox
+      const sweeps = Math.max(2, Math.round(bh / FILL_SWEEP_GAP))
+      const sp = fr * sweeps
+      const frac = sp - Math.floor(sp)
+      const x = Math.floor(sp) % 2 === 0 ? bx + frac * bw : bx + bw - frac * bw
+      return [x, by + fr * bh]
+    }
+
     const paintStroke = (tctx: CanvasRenderingContext2D, p: Prepared, L: number) => {
       const slice = sliceUpTo(p.pts, p.cum, L)
       if (slice.length < 2) return
-      // 闭合形状：沿中心线折线描边（直边保持直、圆保持圆），过程=结果。
+      // 闭合形状：只描周界（直边保持直、圆保持圆，过程=结果）；填色由 fill 阶段单独"用笔涂"。
       if (p.s.closed) {
         const complete = L >= p.total
-        // 墨水填充也走过程：把"已显墨周界 + 回起点的弦"闭合填充，墨随描边逐步铺满
-        //（弦构成填充前沿，跟着笔尖推进；完成时弦消失=整形填满）。
-        if (p.s.fill) {
-          tctx.beginPath()
-          tctx.moveTo(slice[0][0], slice[0][1])
-          for (let k = 1; k < slice.length; k++) tctx.lineTo(slice[k][0], slice[k][1])
-          tctx.closePath()
-          tctx.fillStyle = p.s.fill
-          tctx.fill()
-        }
-        // 描边只描已画周界（完成才 closePath，显墨期不描回程弦）
         tctx.beginPath()
         tctx.moveTo(slice[0][0], slice[0][1])
         for (let k = 1; k < slice.length; k++) tctx.lineTo(slice[k][0], slice[k][1])
@@ -202,12 +235,17 @@ export function FreehandStage({
       ctx.fillStyle = '#f6f0e4'
       ctx.fillRect(0, 0, W, H)
       ctx.drawImage(committed, 0, 0, W, H) // 已完成的笔（离屏，每笔只画一次）一次性贴上
-      // 仅重绘当前正在画的一笔 + 笔尖
+      // 仅重绘当前正在画/填的一笔 + 笔尖
       let penPos: Pt = penFrom
       let lifted = false
-      if (mode === 'draw' && strokeI < prep.length) {
-        paintStroke(ctx, prep[strokeI], drawn)
-        penPos = tipAt(prep[strokeI].pts, prep[strokeI].cum, drawn).pt
+      const cur = prep[strokeI]
+      if (mode === 'draw' && cur) {
+        paintStroke(ctx, cur, drawn)
+        penPos = tipAt(cur.pts, cur.cum, drawn).pt
+      } else if (mode === 'fill' && cur) {
+        fillClosed(ctx, cur, fillFr) // 填色在下
+        paintStroke(ctx, cur, cur.total) // 周界在上
+        penPos = fillPen(cur, fillFr)
       } else if (mode === 'travel') {
         penPos = lerp(penFrom, penTo, ease(Math.min(1, travelT)))
         lifted = true
@@ -219,21 +257,39 @@ export function FreehandStage({
       if (!last) last = ts
       const dt = Math.min(0.05, (ts - last) / 1000)
       last = ts
+      const gotoTravelOrEnd = () => {
+        const next = prep[strokeI + 1]
+        if (next) {
+          penTo = next.pts[0]
+          mode = 'travel'
+          travelT = 0
+        } else {
+          mode = 'end'
+        }
+      }
       if (mode === 'draw') {
         drawn += SPEED * dt
         const cur = prep[strokeI]
         if (drawn >= cur.total) {
           drawn = cur.total
-          paintStroke(cctx, cur, cur.total) // 完成即提交离屏层（travel/后续帧持续显示，无间隙、不重算）
-          penFrom = cur.pts[cur.pts.length - 1]
-          const next = prep[strokeI + 1]
-          if (next) {
-            penTo = next.pts[0]
-            mode = 'travel'
-            travelT = 0
+          if (fillable(cur)) {
+            mode = 'fill' // 周界描完 → 进入"用笔慢慢填色"阶段
+            fillFr = 0
           } else {
-            mode = 'end'
+            paintStroke(cctx, cur, cur.total) // 无需填色：直接提交周界到离屏层
+            penFrom = cur.pts[cur.pts.length - 1]
+            gotoTravelOrEnd()
           }
+        }
+      } else if (mode === 'fill') {
+        const cur = prep[strokeI]
+        fillFr += dt / fillDur(cur)
+        if (fillFr >= 1) {
+          fillFr = 1
+          fillClosed(cctx, cur, 1) // 提交：先填满
+          paintStroke(cctx, cur, cur.total) // 再描周界（覆于填色之上）
+          penFrom = fillPen(cur, 1)
+          gotoTravelOrEnd()
         }
       } else if (mode === 'travel') {
         travelT += dt / TRAVEL_S
