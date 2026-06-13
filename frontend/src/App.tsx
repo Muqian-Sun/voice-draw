@@ -1,21 +1,25 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type Konva from 'konva'
-import { parseOps, type Op } from './dsl'
+import { CANVAS_HEIGHT, CANVAS_WIDTH, parseOps, type Op } from './dsl'
 import { commitIncremental, createHistory, executeWithHistory, type HistoryOutcome, type HistoryState } from './engine/history'
 import { CanvasStage } from './components/CanvasStage'
 import { DebugPanel, type LogEntry } from './components/DebugPanel'
 import { buildAmbiguityClarify, matchExpecting, type ExpectingItem } from './nlu/clarify'
 import { executeTransaction } from './engine/interpreter'
+import { getBBox, type SceneState } from './engine/scene'
 import { correctTranscript } from './nlu/correction'
 import { parseWithLlm, parseWithLlmStream } from './nlu/llm'
 import { decideMode, extractPlanSubject, parseRule, type RuleContext } from './nlu/rules'
 import { SpeculativeParser } from './nlu/speculate'
-import { CONFIRM_YES_WORDS } from './shared/lexicon'
+import { isConfirmYes } from './nlu/confirm'
 import { CONFIRM_WINDOW_MS, STATE_LABELS, type VoiceEvent, type VoiceState } from './voice/fsm'
 import { GatewayTts, TtsOrchestrator, WebSpeechTts } from './voice/tts'
 import { useVoice } from './voice/useVoice'
 
 let logSeq = 0
+
+/** plan 创作后后台自检精修的最多轮数（不追求一次成图，逐轮迭代，VLM 判通过即提前停） */
+const AUTO_CRITIQUE_ROUNDS = 3
 
 /** 视觉质检指令（能力 #27）：修正必须声明式，VLM 像素估读不可靠 */
 const CRITIQUE_INSTRUCTION =
@@ -25,6 +29,29 @@ const CRITIQUE_INSTRUCTION =
   '修"部件悬空/没贴上"优先用 "onEdge":true——中心钉到参照真实形状边缘），' +
   '禁止自己估算绝对 x,y——你的像素估读不可靠；' +
   "画面没有明显缺陷则 intent:'reject' 且 say:'画面看起来没问题'。"
+
+/** 主动共创建议（v1.7 新颖设计）：画完主动提议一处补充，待用户同意再画 */
+const SUGGEST_INSTRUCTION =
+  '这是当前画布的场景 JSON。你是主动的绘画共创伙伴：提议一个能让画面更完整、更生动的小添加' +
+  '（1~3 个部件，用相对定位 ref 贴合现有对象、颜色协调，可用 shadow/tension/gradient 提质）。' +
+  "intent='ops'，ops=要添加的部件（先别当成已画），say=口语化的征询邀请（≤20 字，" +
+  '例"画面右边有点空，加棵小松树好吗？"）。只提一个最自然的建议；' +
+  "若画面已相当完整或不宜再加，则 intent='reject'、ops 为空。"
+
+/** 本地几何预检（免费、确定性）：检出明显超出画布的部件，作为线索喂给视觉自检，纠错更准。
+ *  只报"出界"这种高置信缺陷——部件间的重叠多为有意（眼睛在脸上），不在此误报。 */
+function geometricFindings(scene: SceneState): string {
+  const out: string[] = []
+  for (const o of scene.objects) {
+    const [x, y, w, h] = getBBox(o)
+    if (w <= 0 || h <= 0) continue
+    const hOver = Math.max(0, -x) + Math.max(0, x + w - CANVAS_WIDTH)
+    const vOver = Math.max(0, -y) + Math.max(0, y + h - CANVAS_HEIGHT)
+    if (hOver > w * 0.25 || vOver > h * 0.25) out.push(o.name ?? o.id)
+  }
+  if (out.length === 0) return ''
+  return `部件明显超出画布、需用相对定位移回画布内：${[...new Set(out)].slice(0, 8).join('、')}`
+}
 
 export default function App() {
   const [history, setHistory] = useState<HistoryState>(createHistory)
@@ -56,11 +83,14 @@ export default function App() {
       if (!outcome.error && parsed.ops.some((o) => o.op === 'export')) {
         const stage = stageRef.current
         if (stage) {
-          // 焦点高亮属交互反馈，不进导出图
+          // 焦点高亮、纸面参考网格属界面装饰，不进导出图
           const overlay = stage.findOne<Konva.Layer>('.overlay')
+          const grid = stage.findOne('.paper-grid')
           overlay?.visible(false)
+          grid?.visible(false)
           const url = stage.toDataURL({ pixelRatio: 2 })
           overlay?.visible(true)
+          grid?.visible(true)
           const a = document.createElement('a')
           a.href = url
           a.download = `voicedraw-${Date.now()}.png`
@@ -97,6 +127,19 @@ export default function App() {
       clearTimeout(confirmTimerRef.current)
       confirmTimerRef.current = null
     }
+  }, [])
+
+  // 共创建议窗口（v1.7）：plan 画完主动提议补充，待用户回应；说"好"采纳、其余丢弃继续
+  const pendingSuggestRef = useRef<Op[] | null>(null)
+  const suggestTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [suggestText, setSuggestText] = useState<string | null>(null)
+  const clearSuggest = useCallback(() => {
+    if (suggestTimerRef.current !== null) {
+      clearTimeout(suggestTimerRef.current)
+      suggestTimerRef.current = null
+    }
+    pendingSuggestRef.current = null
+    setSuggestText(null)
   }, [])
 
   // TTS 编排：网关（豆包语音合成 1.0）→ speechSynthesis 兜底；播报期间半双工互斥
@@ -154,10 +197,16 @@ export default function App() {
         const stage = stageRef.current
         if (stage === null) return { rounds: round - 1, fixed, clean: false }
         const overlay = stage.findOne<Konva.Layer>('.overlay')
+        const grid = stage.findOne('.paper-grid')
         overlay?.visible(false)
-        const image = stage.toDataURL({ pixelRatio: 0.75 })
+        grid?.visible(false)
+        const image = stage.toDataURL({ pixelRatio: 1.0 }) // v1.7：0.75→1.0，VLM 看清 ±10px 错位
         overlay?.visible(true)
-        const llm = await parseWithLlm(CRITIQUE_INSTRUCTION, 'parse', { scene: historyRef.current.scene, image })
+        grid?.visible(true)
+        // 本地几何预检线索并入质检指令（出界等高置信缺陷，指引 VLM 更准）
+        const findings = geometricFindings(historyRef.current.scene)
+        const instruction = findings === '' ? CRITIQUE_INSTRUCTION : `${CRITIQUE_INSTRUCTION}\n本地几何预检：${findings}`
+        const llm = await parseWithLlm(instruction, 'parse', { scene: historyRef.current.scene, image })
         if (!llm.ok) {
           pushLog('error', `自检第 ${round} 轮失败：${llm.error}`)
           return { rounds: round, fixed, clean: false }
@@ -180,6 +229,36 @@ export default function App() {
     },
     [execOps, pushLog],
   )
+
+  /** 共创建议（v1.7）：读当前场景，让 LLM 主动提议一处补充；存起来 + 播报征询 + 弹气泡，待用户回应 */
+  const proactiveSuggest = useCallback(async () => {
+    const scene = historyRef.current.scene
+    if (scene.objects.length === 0) return
+    const llm = await parseWithLlm(SUGGEST_INSTRUCTION, 'parse', { scene })
+    if (!llm.ok) return
+    const res = llm.result
+    if (res.intent !== 'ops' || res.ops.length === 0 || res.say === undefined || res.say.length === 0) return
+    pendingSuggestRef.current = res.ops
+    setSuggestText(res.say)
+    pushLog('info', `💡 主动建议：${res.say}`)
+    say(res.say)
+    if (suggestTimerRef.current !== null) clearTimeout(suggestTimerRef.current)
+    suggestTimerRef.current = setTimeout(() => clearSuggest(), 25_000) // 久无回应自动撤销建议
+  }, [clearSuggest, pushLog, say])
+
+  /** plan 创作完成后：① 后台多轮异步自检精修（不追求一次成图，逐轮"自检→修正"，画面越改越好，
+      VLM 判通过即提前停；本地几何预检并入指引）② 精修后再给一条共创建议。
+      等两帧确保新场景已上屏再截图，否则会截到旧画面。 */
+  const autoCritiqueAfterPlan = useCallback(() => {
+    void (async () => {
+      await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))
+      if (historyRef.current.scene.objects.length === 0) return
+      pushLog('info', `🔍 创作完成，后台多轮自检精修（最多 ${AUTO_CRITIQUE_ROUNDS} 轮，通过即停）…`)
+      const r = await runVisualCheck(AUTO_CRITIQUE_ROUNDS)
+      pushLog('info', `自检精修完成：${r.rounds} 轮、修正 ${r.fixed} 处${r.clean ? '、画面通过 ✓' : ''}`)
+      await proactiveSuggest() // 精修后基于最终画面提建议
+    })()
+  }, [proactiveSuggest, pushLog, runVisualCheck])
 
   // 最近 3 轮成功指令（协议 §2.2 recent，供 LLM 多轮指代）
   const recentRef = useRef<Array<{ utterance: string; summary: string }>>([])
@@ -264,12 +343,13 @@ export default function App() {
         return true
       }
 
-      // 确认窗口期：命中肯定词执行，其余任何输入视为否定（规格 §2.6 保守策略）
+      // 确认窗口期：含肯定词且无否定词→执行，其余视为否定（规格 §2.6 保守策略）。
+      // 包含匹配兼容"我确认/确认清空/确定吧"等带前后缀口语；再对纠错后文本判一次，兜住语音同音偏差。
       if (pendingConfirmRef.current !== null) {
         clearConfirmTimer()
         const pending = pendingConfirmRef.current
         pendingConfirmRef.current = null
-        if (CONFIRM_YES_WORDS.includes(trimmed)) {
+        if (isConfirmYes(trimmed) || isConfirmYes(correctTranscript(trimmed).corrected)) {
           advance(true)
           speakOutcome(execOps(pending), '已清空')
         } else {
@@ -277,6 +357,25 @@ export default function App() {
           say('已取消')
         }
         return
+      }
+
+      // 共创建议窗口（v1.7）：说"好/可以"→采纳绘制；否则丢弃建议并把本句当新指令继续处理（软窗口，不 return）
+      if (pendingSuggestRef.current !== null) {
+        const suggested = pendingSuggestRef.current
+        const accept = isConfirmYes(trimmed) || isConfirmYes(correctTranscript(trimmed).corrected)
+        clearSuggest()
+        if (accept) {
+          advance(true)
+          const outcome = execOps(suggested)
+          if (!('error' in outcome && outcome.error)) {
+            say('好嘞，加上了')
+            recordSuccess(trimmed, suggested)
+          } else {
+            say('这个加得不太顺，先跳过')
+          }
+          return
+        }
+        // 非肯定：建议已丢弃，继续按新指令解析本句
       }
 
       // 投机解析（§4.1）：final 与最后一次 partial 一致 → 复用预解析（纠错+规则匹配零耗时）
@@ -364,9 +463,12 @@ export default function App() {
             }
             work = r2.state
             painted += 1
+            // 首个部件上屏即把状态从"解析中"切到"执行中(绘制)"，避免长流期间一直显示"解析中"
+            if (painted === 1) voiceApiRef.current?.dispatch('PARSE_DONE')
             historyRef.current = { ...historyRef.current, scene: work }
             setHistory(historyRef.current)
-            if (op.op === 'create' && op.desc !== undefined) pushLog('info', `▸ ${op.desc}`)
+            // 边画边解说：每画一件即语音播报其 desc（say 内部已写 🔊 日志；TTS 串行排队，与渐进绘制同步推进）
+            if (op.op === 'create' && op.desc !== undefined) say(op.desc)
           })
 
           if (stream.ok && !execFailed) {
@@ -405,6 +507,7 @@ export default function App() {
             }
             say(res.say)
             recordSuccess(utterance, res.ops)
+            if (res.source === 'llm-plan') autoCritiqueAfterPlan() // v1.7：创作完成自动自检一轮
             return
           }
 
@@ -466,6 +569,7 @@ export default function App() {
             }
           }
           if (speakOutcome(outcome, res.say, res.ops)) recordSuccess(utterance, res.ops)
+          if (res.source === 'llm-plan' && ok) autoCritiqueAfterPlan() // v1.7：创作完成自动自检一轮
         })()
         return
       }
@@ -486,7 +590,7 @@ export default function App() {
       advance(true)
       if (speakOutcome(execOps(r.ops), r.say, r.ops)) recordSuccess(utterance, r.ops)
     },
-    [execOps, pushLog, recordSuccess, ruleCtx, runVisualCheck, say],
+    [autoCritiqueAfterPlan, clearSuggest, execOps, pushLog, recordSuccess, ruleCtx, runVisualCheck, say],
   )
 
   // 控制台入口与面板共用同一执行通道
@@ -509,41 +613,241 @@ export default function App() {
   })
   voiceApiRef.current = { dispatch: voice.dispatch, setTtsActive: voice.setTtsActive, getState: voice.getState }
 
+  // 工程台抽屉（默认收起；保留赛制要求的非语音降级入口 + 演示用埋点看板）
+  const [devOpen, setDevOpen] = useState(false)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setDevOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  // 画板自适应缩放：固定 1024×768 画布按可视区等比缩放居中（仅显示，不影响坐标/导出）
+  const viewportRef = useRef<HTMLDivElement>(null)
+  const [fit, setFit] = useState(0.6)
+  useEffect(() => {
+    const el = viewportRef.current
+    if (el === null) return
+    const compute = () => {
+      // 横向少留边、纵向留出图注空间；画板尽量铺满图版，减少四周空隙
+      const s = Math.min((el.clientWidth - 56) / CANVAS_WIDTH, (el.clientHeight - 72) / CANVAS_HEIGHT)
+      setFit(s > 0 ? Math.min(s, 1) : 0.1)
+    }
+    compute()
+    const ro = new ResizeObserver(compute)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
+  // 进入即自动常听（无"开始"按钮）。浏览器首次弹麦克风授权；被拒/无手势失败 → 显示重试
+  const autoStartedRef = useRef(false)
+  useEffect(() => {
+    if (autoStartedRef.current) return
+    autoStartedRef.current = true
+    void voice.start()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const scene = history.scene
   const op = (o: Op) => () => execOps(o)
-  const listening = voice.state !== 'idle'
+  const loading = voice.vadStatus === 'loading'
+  const errored = voice.vadStatus === 'error'
+  const running = voice.state !== 'idle' // 常听运行中
+  const hearing = voice.hearing // 正听到人声
+  const stats = specRef.current.stats
+  // 主控球是「状态灯」而非「开始」按钮：点击=静音/恢复；出错或休眠时点击=重开
+  const orbClass = [
+    'voice-orb',
+    errored ? 'is-error' : '',
+    !running && !loading && !errored ? 'is-muted' : '',
+    running ? 'is-live' : '',
+    hearing ? 'voice-on' : '',
+  ]
+    .filter(Boolean)
+    .join(' ')
+  const statusLabel = loading
+    ? '开启麦克风中'
+    : errored
+      ? '麦克风未开启'
+      : !running
+        ? voice.asleep
+          ? '已休眠'
+          : '已静音'
+        : hearing
+          ? '在听…'
+          : STATE_LABELS[voice.state]
+  const statusHint = loading
+    ? '首次需授权麦克风'
+    : errored
+      ? '点麦克风重试'
+      : !running
+        ? '点麦克风恢复常听'
+        : hearing
+          ? '正在识别'
+          : voice.state === 'listening'
+            ? '随时开口 · 自动识别'
+            : ''
   return (
     <div className="app">
-      <header className="topbar">
-        <h1>VoiceDraw 语音绘图</h1>
-        <button
-          className={`voice-btn ${listening ? 'voice-on' : ''}`}
-          onClick={listening ? voice.stop : voice.start}
-          disabled={voice.vadStatus === 'loading'}
-        >
-          {voice.vadStatus === 'loading' ? '⏳ 加载 VAD…' : listening ? '🔴 停止聆听' : '🎤 开始聆听'}
-        </button>
-        <span className="status-pill">状态 {STATE_LABELS[voice.state]}</span>
-        <span className="status-pill">ASR {voice.providerName}</span>
-        <span className="status-pill" title="规则命中 / LLM 调用（parse+plan）/ 投机命中率 / 最近一次解析来源与延迟">
-          规则 {metrics.rule} ｜ LLM {metrics.llmParse + metrics.llmPlan}
-          {specRef.current.stats.speculated > 0 &&
-            ` ｜ 投机 ${specRef.current.stats.hits}/${specRef.current.stats.hits + specRef.current.stats.misses}`}
-          ｜ 最近 {metrics.last}
-        </span>
-        <span className="status-pill">
-          对象 {scene.objects.length} ｜ 焦点 {scene.focusId ?? '无'} ｜ 撤销 {history.undoStack.length} / 重做{' '}
-          {history.redoStack.length}
-        </span>
-      </header>
-      <main className="workspace">
-        <div className="canvas-wrap">
-          <div className="stage-frame">
-            <CanvasStage scene={scene} stageRef={stageRef} />
+      {/* 竖排书脊标（艺术印刷跑头，左右对称，贴视口边） */}
+      <div className="spine spine-left" aria-hidden>VOICE-DRIVEN DRAWING · 开口成画</div>
+      <div className="spine spine-right" aria-hidden>ATELIER EDITION · 实时语音共创</div>
+
+      {/* 版面：细外框内的一张"印刷页" */}
+      <div className="page">
+        {/* 眉头 masthead */}
+        <header className="masthead">
+          <div className="mast-brand">
+            <div className="brand-mark" aria-hidden>
+              <span />
+              <span />
+              <span />
+            </div>
+            <h1 className="mast-title">
+              Voice<b>Draw</b>
+            </h1>
+            <span className="mast-divider" aria-hidden />
+            <span className="mast-tag">语音绘图 · 开口成画</span>
           </div>
-          {voice.subtitle && (
-            <div className={`subtitle subtitle-${voice.subtitle.kind}`}>{voice.subtitle.text}</div>
-          )}
+          <div className="mast-meta">
+            <span className="folio">№ 01 · MMXXVI</span>
+            <span className="mast-status" data-state={voice.state}>
+              <span className="state-dot" data-state={voice.state} />
+              {statusLabel}
+            </span>
+            <button
+              className={`dev-toggle ${devOpen ? 'is-open' : ''}`}
+              onClick={() => setDevOpen((v) => !v)}
+              title="工程台 / 调试面板（Esc 关闭）"
+              aria-label="工程台"
+            >
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden>
+                <path d="M8 6 3 12l5 6M16 6l5 6-5 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+          </div>
+        </header>
+
+        {/* 主图版 plate：Riso 海报装饰 + 等比自适应居中的暖纸画板 + 图版说明 */}
+        <main className="plate" ref={viewportRef}>
+          {/* Riso 三色叠印装饰：绘图原语放大成海报色块（位于画板后、填满四周空白） */}
+          <svg className="decor" viewBox="0 0 1200 800" preserveAspectRatio="xMidYMid slice" aria-hidden>
+            <circle className="d-red" cx="70" cy="120" r="190" />
+            <circle className="d-ring" cx="1130" cy="690" r="200" fill="none" />
+            <path className="d-yellow" d="M1060 70 L1190 70 L1125 188 Z" />
+            <path className="d-tri" d="M150 690 L250 690 L200 600 Z" fill="none" />
+            <path className="d-wave" d="M30 540 q42 -46 84 0 t84 0 t84 0" fill="none" />
+            <circle className="d-dot" cx="980" cy="150" r="13" />
+            <circle className="d-dot" cx="1020" cy="150" r="13" />
+            <circle className="d-dot" cx="1060" cy="150" r="13" />
+          </svg>
+          <div className="stage-scaler" style={{ transform: `translate(-50%, -50%) scale(${fit})` }}>
+            <div className="stage-frame">
+              <CanvasStage scene={scene} stageRef={stageRef} />
+            </div>
+          </div>
+          {/* 浮层：共创建议气泡 + 实时字幕（压在图版下沿之上） */}
+          <div className="plate-overlay">
+            {suggestText && (
+              <div className="suggest-chip" role="status">
+                <span className="suggest-icon" aria-hidden>
+                  ✦
+                </span>
+                <span className="suggest-text">{suggestText}</span>
+                <span className="suggest-hint">说「好」采纳 · 「不用」跳过</span>
+              </div>
+            )}
+            {voice.subtitle && <div className={`subtitle subtitle-${voice.subtitle.kind}`}>{voice.subtitle.text}</div>}
+          </div>
+          <div className="plate-cap">图版 — 实时语音绘制 · 对象 {scene.objects.length} · 1024 × 768</div>
+        </main>
+
+        {/* 页脚信息线：麦克风作"封印"居中压线 */}
+        <footer className="footer">
+          <span className="foot-side foot-left">共创 · 实时 · 语音绘图</span>
+          <div className="foot-seal">
+            <button
+              className={orbClass}
+              onClick={running ? voice.stop : voice.start}
+              disabled={loading}
+              aria-label={running ? '静音' : '开启麦克风'}
+              title={running ? '点击静音' : '点击开启麦克风'}
+            >
+              <span className="orb-ring" aria-hidden />
+              <span className="orb-ring orb-ring-2" aria-hidden />
+              <span className="orb-mic" aria-hidden>
+                <svg width="26" height="26" viewBox="0 0 24 24" fill="none">
+                  <rect x="9" y="2.5" width="6" height="11" rx="3" fill="currentColor" />
+                  <path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </span>
+              <span className="orb-eq" aria-hidden>
+                <i />
+                <i />
+                <i />
+                <i />
+              </span>
+            </button>
+            <div className="dock-status">
+              <b>{statusLabel}</b>
+              {statusHint && <em>{statusHint}</em>}
+            </div>
+          </div>
+          <span className="foot-side foot-right">v1.7 · ATELIER EDITION</span>
+        </footer>
+      </div>
+
+      {/* 工程台抽屉 */}
+      <div className={`dev-scrim ${devOpen ? 'is-open' : ''}`} onClick={() => setDevOpen(false)} />
+      <aside className={`dev-drawer ${devOpen ? 'is-open' : ''}`} aria-hidden={!devOpen}>
+        <div className="dev-head">
+          <span className="dev-head-title">工程台 · Telemetry</span>
+          <button className="dev-close" onClick={() => setDevOpen(false)} aria-label="关闭工程台">
+            ✕
+          </button>
+        </div>
+        <div className="telemetry-grid">
+          <span className="readout">
+            <i className="readout-k">
+              <span className="state-dot" data-state={voice.state} />
+              状态
+            </i>
+            <b className="readout-v">{STATE_LABELS[voice.state]}</b>
+          </span>
+          <span className="readout">
+            <i className="readout-k">ASR</i>
+            <b className="readout-v">{voice.providerName}</b>
+          </span>
+          <span className="readout" title="规则命中 / LLM 调用（parse+plan）/ 投机命中率">
+            <i className="readout-k">解析</i>
+            <b className="readout-v">
+              规则 <b>{metrics.rule}</b>
+              <em>·</em>LLM <b>{metrics.llmParse + metrics.llmPlan}</b>
+              {stats.speculated > 0 && (
+                <>
+                  <em>·</em>投机 <b>{stats.hits}/{stats.hits + stats.misses}</b>
+                </>
+              )}
+            </b>
+          </span>
+          <span className="readout" title="最近一次解析来源与延迟">
+            <i className="readout-k">最近</i>
+            <b className="readout-v">{metrics.last}</b>
+          </span>
+          <span className="readout">
+            <i className="readout-k">场景</i>
+            <b className="readout-v">
+              对象 <b>{scene.objects.length}</b>
+              <em>·</em>焦点 {scene.focusId ?? '无'}
+            </b>
+          </span>
+          <span className="readout">
+            <i className="readout-k">历史</i>
+            <b className="readout-v">
+              撤销 {history.undoStack.length}<em>/</em>重做 {history.redoStack.length}
+            </b>
+          </span>
         </div>
         <DebugPanel
           entries={log}
@@ -552,7 +856,7 @@ export default function App() {
           onRedo={op({ op: 'redo' })}
           onClear={op({ op: 'clear' })}
         />
-      </main>
+      </aside>
     </div>
   )
 }
