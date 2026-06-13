@@ -112,33 +112,38 @@ export function FreehandStage({
     const paintStroke = (tctx: CanvasRenderingContext2D, p: Prepared, L: number) => {
       const slice = sliceUpTo(p.pts, p.cum, L)
       if (slice.length < 2) return
-      if (p.s.closed && L >= p.total) {
-        // 闭合完成：先填充内部，再描墨边
+      // 闭合形状：始终沿中心线折线描边（直边保持直、圆保持圆），完成时再 closePath+填充。
+      // 这样"绘制过程"与"最终结果"完全一致——此前显墨走 getStroke 的平滑会把直边画弯，
+      // 完成又 snap 回直多边形，于是出现"过程歪、结果直"的割裂。
+      if (p.s.closed) {
+        const complete = L >= p.total
         tctx.beginPath()
-        tctx.moveTo(p.pts[0][0], p.pts[0][1])
-        for (const pt of p.pts) tctx.lineTo(pt[0], pt[1])
-        tctx.closePath()
-        if (p.s.fill) {
-          tctx.fillStyle = p.s.fill
-          tctx.fill()
+        tctx.moveTo(slice[0][0], slice[0][1])
+        for (let k = 1; k < slice.length; k++) tctx.lineTo(slice[k][0], slice[k][1])
+        if (complete) {
+          tctx.closePath()
+          if (p.s.fill) {
+            tctx.fillStyle = p.s.fill
+            tctx.fill()
+          }
         }
         tctx.lineWidth = p.s.width ?? 6
         tctx.strokeStyle = p.s.color ?? INK
         tctx.lineJoin = 'round'
+        tctx.lineCap = 'round'
         tctx.stroke()
         return
       }
-      // 开放笔画（或闭合显墨中）：perfect-freehand 生成轮廓。
-      // 关键：关掉 simulatePressure/thinning（恒定笔宽）——否则按"速度"模拟的压感会让笔宽随
-      // 显墨长度逐帧重算、已画段宽度抖动闪烁，看着不流畅；改为恒宽 + 多输入平滑，线条顺滑稳定。
-      // 仅靠 start/end taper 保留落笔/收笔的两端收细（笔感）。
+      // 开放笔画：perfect-freehand 变宽墨带（恒定笔宽消除逐帧抖动，仅两端 taper 保留收笔笔感）。
+      // 直线类（smooth=false）关平滑，避免把直笔画弯；有机线保留平滑。
       const w = p.s.width ?? 8
       const taper = p.s.taper !== false
+      const straight = p.s.smooth === false
       const outline = getStroke(slice as number[][], {
         size: w,
         thinning: 0,
-        smoothing: 0.62,
-        streamline: 0.32,
+        smoothing: straight ? 0 : 0.62,
+        streamline: straight ? 0 : 0.32,
         simulatePressure: false,
         last: L >= p.total,
         start: { cap: !taper, taper: taper ? w * 2.5 : 0 },
