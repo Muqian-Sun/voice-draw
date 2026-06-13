@@ -151,10 +151,11 @@ export const CANVAS_PADDING = 40
 export const AUTO_LAYOUT_GAP = 40
 
 /** 缺省样式（规格 §2.4）：闭合图形缺省填充；线类缺省描边；文字缺省颜色 */
+// v1.7 缺省填充由暗灰 #4B5563（暖纸上发闷）换为饱和蓝 #2D7DD2，未指定颜色时也"出彩"；描边加粗 3→4
 export const DEFAULT_STYLE = {
-  fill: '#4B5563',
+  fill: '#2D7DD2',
   lineStroke: '#111827',
-  lineStrokeWidth: 3,
+  lineStrokeWidth: 4,
   textFill: '#111827',
 } as const
 
