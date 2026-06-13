@@ -22,7 +22,7 @@
 
 ## 架构
 
-三层指令理解 + 统一绘图 DSL：本地规则快路径（高频指令 <50ms 零成本）→ LLM 结构化解析（空间关系/指代）→ Agent 创作拆解（组合图案）。所有理解层输出同一套 JSON 原子操作，执行引擎基于 Konva 场景图渲染，天然支持事务式 undo/redo。语音输入为本地 VAD 断句 + 火山引擎豆包流式 ASR（mock/WebSpeech 兜底），反馈经火山豆包 TTS（speechSynthesis 兜底）播报闭环，全程半双工互斥。
+三层指令理解 + 统一绘图 DSL：本地规则快路径（高频指令 <50ms 零成本）→ LLM 结构化解析（空间关系/指代）→ Agent 创作拆解（组合图案）。所有理解层输出同一套 JSON 原子操作，执行引擎为自研纯函数解释器 + 场景图 + 快照栈（天然支持事务式 undo/redo），渲染走自研「自由画笔引擎」`FreehandSceneStage`（逐笔手绘动画 + 增量 diff + vpath 贝塞尔矢量插画）。语音输入为本地 VAD 断句 + 火山引擎豆包流式 ASR（mock/WebSpeech 兜底），反馈经火山豆包 TTS（speechSynthesis 兜底）播报闭环，全程半双工互斥。
 
 详见 [架构设计与开发计划](docs/题目二-架构设计与开发计划.md)、[交互协议规范](docs/题目二-交互协议规范.md)。
 
@@ -59,8 +59,7 @@ GOLDEN_LIVE=1 pnpm test golden                # B3/B4 真实 LLM 实跑（需 ba
 | 库 | 用途 |
 |----|------|
 | react / react-dom | 前端 UI 框架 |
-| konva / react-konva | Canvas 2D 场景图渲染（绘图执行引擎底座） |
-| perfect-freehand | 自由画笔研究：输入点 → 变宽墨带轮廓多边形（笔触动画渲染，`?freehand` 演示） |
+| perfect-freehand | 自由画笔引擎笔触：输入点 → 变宽墨带轮廓多边形（v2.0 主渲染器 `FreehandSceneStage` 的图元手绘 + `?freehand` 研究演示） |
 | zod | 运行时 Schema 校验（前后端：DSL / LLM 输出 / ASR 转发协议） |
 | vitest | 单元测试（前后端） |
 | ws | backend ASR WebSocket 网关与上游转发 |
