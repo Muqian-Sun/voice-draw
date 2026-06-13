@@ -59,7 +59,7 @@ const SPEED = 400 // 运笔速度 px/s（适中观感，便于看清绘制过程
 const TRAVEL_S = 0.3 // 抬笔换行时长
 const FILL_GAP = 15 // 着色笔道行距 px
 const FILL_PASS_SEC = 0.16 // 每道扫色时长 s（"慢慢一笔一笔"着色）
-const FILL_ALPHA = 0.6 // 单道笔色不透明度（半透明 → 来回叠加出真实着色的笔触/渐变感）
+const FILL_ALPHA = 1 // 笔色不透明：来回笔道是"过程"（看得见笔在涂），但上的是实色 → 成图实心、无浓淡交替
 const ease = (t: number) => t * t * (3 - 2 * t)
 const lerp = (a: Pt, b: Pt, t: number): Pt => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
 
@@ -117,7 +117,7 @@ export function FreehandStage({
         s.smooth === false ? densifyLinear(anchors, s.closed ?? false, 7) : sampleCenterline(anchors, s.closed ?? false, 18)
       const cum = cumulativeLengths(pts)
       const bbox = bboxOf(pts)
-      // 预生成着色笔道：自上而下逐行横扫，方向交替（蛇形），每行一道半透明笔色
+      // 预生成着色笔道：自上而下逐行横扫，方向交替（蛇形），每行一道实色笔道
       const fillPasses: Array<{ x0: number; x1: number; y: number }> = []
       if (s.closed && s.fill) {
         const [bx, by, bw, bh] = bbox
@@ -143,7 +143,7 @@ export function FreehandStage({
     const fillable = (p: Prepared) => p.fillPasses.length > 0
     const fillDur = (p: Prepared) => Math.max(0.3, p.fillPasses.length * FILL_PASS_SEC) // 按笔道数定时长
 
-    // 用笔一道一道着色：clip 形内，每道单独半透明描（来回叠加出笔触/渐变感，非死板实心），
+    // 用笔一道一道着色：clip 形内，逐道实色描（动画上看得见笔来回涂，实色叠满 → 成图实心、无浓淡交替），
     // 当前道沿横向生长。fr=填色进度 0~1，映射到第几道 + 当前道完成比例。
     const fillClosed = (tctx: CanvasRenderingContext2D, p: Prepared, fr: number) => {
       const n = p.fillPasses.length
@@ -156,7 +156,7 @@ export function FreehandStage({
       tctx.clip()
       tctx.globalAlpha = FILL_ALPHA
       tctx.strokeStyle = p.s.fill
-      tctx.lineWidth = FILL_GAP * 1.4 // 略宽于行距 → 相邻道半透明叠加，出着色渐变/笔触
+      tctx.lineWidth = FILL_GAP * 1.4 // 略宽于行距 → 相邻道叠满无缝（实色不留行间空隙）
       tctx.lineCap = 'round'
       tctx.lineJoin = 'round'
       const prog = fr * n
@@ -166,7 +166,7 @@ export function FreehandStage({
         tctx.beginPath()
         tctx.moveTo(ps.x0, ps.y)
         tctx.lineTo(ps.x1, ps.y)
-        tctx.stroke() // 每道单独 stroke → 叠加处更浓（着色感）
+        tctx.stroke() // 逐道描：动画上看得见笔一道道涂，实色叠满成实心
       }
       if (full < n) {
         const ps = p.fillPasses[full]
