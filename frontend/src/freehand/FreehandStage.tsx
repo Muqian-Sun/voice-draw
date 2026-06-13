@@ -52,15 +52,16 @@ interface Prepared {
   cum: number[]
   total: number
   bbox: [number, number, number, number] // [x,y,w,h]
-  fillRings: Array<{ pts: Pt[]; cum: number[]; len: number }> // 沿形向心收缩的等高线（闭合环），由外到内填
-  fillLen: number // 所有环周长之和（着色总运笔长度）
+  fillPath: Pt[] // 横向来回直线扫描的着色运笔中心线（clip 到形内逐行涂满，起笔即满宽不缺失）
+  fillCum: number[]
+  fillLen: number // 蛇形总弧长（着色总运笔长度）
 }
 
 const SPEED = 400 // 运笔速度 px/s（适中观感，便于看清绘制过程）
 const TRAVEL_S = 0.3 // 抬笔换行时长
-const FILL_GAP = 9 // 同心等高线间距 px（一圈圈沿形收拢，细、圈多）
-const FILL_SPEED = 3200 // 着色运笔速度 px/s（沿轮廓一圈圈往里收，自然流水填）
-const FILL_PEN_W = 12 // 着色笔宽 px（圆头实色、略宽于间距 → 相邻圈叠满、彻底涂满无缝）
+const FILL_ROW_GAP = 10 // 着色横扫行距 px（一行一行往下涂）
+const FILL_SPEED = 700 // 着色运笔速度 px/s（横向来回扫，放慢以看清一行行推进）
+const FILL_PEN_W = 14 // 着色笔宽 px（圆头、略宽于行距 → 行间叠满无缝）
 const ease = (t: number) => t * t * (3 - 2 * t)
 const lerp = (a: Pt, b: Pt, t: number): Pt => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
 
@@ -76,6 +77,38 @@ function bboxOf(pts: Pt[]): [number, number, number, number] {
     if (y > maxY) maxY = y
   }
   return [minX, minY, maxX - minX, maxY - minY]
+}
+
+/** 水平扫描线与多边形求交：返回 y 处落在形内的 [x0,x1] 区间（升序、成对）。半开判定避免顶点重复计数。 */
+function spansAtY(poly: Pt[], y: number): Array<[number, number]> {
+  const xs: number[] = []
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i]
+    const b = poly[(i + 1) % poly.length]
+    if ((a[1] <= y && b[1] > y) || (b[1] <= y && a[1] > y)) {
+      xs.push(a[0] + ((b[0] - a[0]) * (y - a[1])) / (b[1] - a[1]))
+    }
+  }
+  xs.sort((p, q) => p - q)
+  const spans: Array<[number, number]> = []
+  for (let i = 0; i + 1 < xs.length; i += 2) spans.push([xs[i], xs[i + 1]])
+  return spans
+}
+
+/** 由轮廓多边形生成"横着一行一行往下、左右来回（boustrophedon）"的着色直线蛇形运笔中心线。
+ *  逐行求交得形内横段（直线段），奇偶行反向 → 转折处相连成往复笔触；clip 到形内防溢出。
+ *  行距<笔宽 → 行间叠满涂实；圆头满宽一笔描，起笔即满宽 → 起笔不缺失。 */
+function buildFillPath(poly: Pt[], bbox: [number, number, number, number]): Pt[] {
+  const [, by, , bh] = bbox
+  const out: Pt[] = []
+  let row = 0
+  for (let y = by + FILL_ROW_GAP / 2; y < by + bh; y += FILL_ROW_GAP, row++) {
+    let spans = spansAtY(poly, y)
+    if (spans.length === 0) continue
+    if (row % 2 === 1) spans = spans.reverse().map(([a, b]) => [b, a] as [number, number]) // 反向行：从右往左
+    for (const [x0, x1] of spans) out.push([x0, y], [x1, y]) // 直线横段
+  }
+  return out
 }
 
 export function FreehandStage({
@@ -118,25 +151,10 @@ export function FreehandStage({
         s.smooth === false ? densifyLinear(anchors, s.closed ?? false, 7) : sampleCenterline(anchors, s.closed ?? false, 18)
       const cum = cumulativeLengths(pts)
       const bbox = bboxOf(pts)
-      // 预生成着色等高线：把轮廓按中心向内等比收缩成一圈圈闭合环（沿形流水，非矩形扫线），由外到内填
-      const fillRings: Array<{ pts: Pt[]; cum: number[]; len: number }> = []
-      let fillLen = 0
-      if (s.closed && s.fill && pts.length >= 3) {
-        const cx = bbox[0] + bbox[2] / 2
-        const cy = bbox[1] + bbox[3] / 2
-        let dmax = 1
-        for (const [x, y] of pts) dmax = Math.max(dmax, Math.hypot(x - cx, y - cy))
-        const stepF = FILL_GAP / dmax // 每圈收缩比（边界间距≈FILL_GAP，越往内越密 → 必然涂满）
-        for (let f = 1; f > 0; f -= stepF) {
-          const ring = pts.map(([x, y]) => [cx + (x - cx) * f, cy + (y - cy) * f] as Pt)
-          ring.push(ring[0]) // 闭合
-          const rcum = cumulativeLengths(ring)
-          const len = rcum[rcum.length - 1]
-          fillRings.push({ pts: ring, cum: rcum, len })
-          fillLen += len
-        }
-      }
-      return { s, pts, cum, total: cum[cum.length - 1], bbox, fillRings, fillLen }
+      // 预生成着色运笔：横着一行行往下、来回直线横扫（clip 到形内；起笔即满宽，无缺失）
+      const fillPath = s.closed && s.fill && pts.length >= 3 ? buildFillPath(pts, bbox) : []
+      const fillCum = cumulativeLengths(fillPath)
+      return { s, pts, cum, total: cum[cum.length - 1], bbox, fillPath, fillCum, fillLen: fillCum[fillCum.length - 1] ?? 0 }
     })
 
     let strokeI = 0
@@ -149,19 +167,15 @@ export function FreehandStage({
     let last = 0
     let raf = 0
 
-    const fillable = (p: Prepared) => p.fillRings.length > 0
+    const fillable = (p: Prepared) => p.fillPath.length >= 2
     const fillDur = (p: Prepared) => Math.max(0.4, p.fillLen / FILL_SPEED) // 按总运笔长定时长
 
-    // 沿形一圈一圈着色：clip 形内，由外到内逐圈实色描（圆头、相邻圈叠满 → 彻底涂满无缝），
-    // 顺着轮廓流水推进；动画上一圈一圈画出来。fr=填色进度 0~1。
-    const strokeRing = (tctx: CanvasRenderingContext2D, ring: Pt[], upto: number) => {
-      tctx.beginPath()
-      tctx.moveTo(ring[0][0], ring[0][1])
-      for (let k = 1; k < upto; k++) tctx.lineTo(ring[k][0], ring[k][1])
-      tctx.stroke()
-    }
+    // 横着一行一行着色：clip 形内，沿"来回直线扫描"按弧长渐进上色，圆头满宽一笔描（行距 < 笔宽 →
+    // 行间必叠满、涂实，转折处圆角相接、自相交也无缝；起笔即满宽 → 起笔不缺失，全程彻底涂满）。fr=进度 0~1。
     const fillClosed = (tctx: CanvasRenderingContext2D, p: Prepared, fr: number) => {
-      if (p.fillRings.length === 0 || !p.s.fill) return
+      if (p.fillPath.length < 2 || !p.s.fill) return
+      const slice = sliceUpTo(p.fillPath, p.fillCum, fr * p.fillLen)
+      if (slice.length < 2) return
       tctx.save()
       tctx.beginPath()
       tctx.moveTo(p.pts[0][0], p.pts[0][1])
@@ -169,36 +183,29 @@ export function FreehandStage({
       tctx.closePath()
       tctx.clip()
       tctx.strokeStyle = p.s.fill
-      tctx.lineWidth = FILL_PEN_W
       tctx.lineCap = 'round'
       tctx.lineJoin = 'round'
-      let target = fr * p.fillLen
-      for (const ring of p.fillRings) {
-        if (target <= 0) break
-        if (target >= ring.len) {
-          strokeRing(tctx, ring.pts, ring.pts.length) // 整圈
-          target -= ring.len
-        } else {
-          const slice = sliceUpTo(ring.pts, ring.cum, target) // 当前圈部分
-          if (slice.length >= 2) strokeRing(tctx, slice, slice.length)
-          target = 0
-        }
-      }
+      tctx.lineWidth = FILL_PEN_W
+      tctx.beginPath()
+      tctx.moveTo(slice[0][0], slice[0][1])
+      for (let k = 1; k < slice.length; k++) tctx.lineTo(slice[k][0], slice[k][1])
+      tctx.stroke()
       tctx.restore()
     }
-    // 着色时笔尖位置：当前圈、当前弧长处
-    const fillPen = (p: Prepared, fr: number): Pt => {
-      if (p.fillRings.length === 0) return p.pts[0]
-      let target = fr * p.fillLen
-      for (const ring of p.fillRings) {
-        if (target <= ring.len) {
-          const slice = sliceUpTo(ring.pts, ring.cum, Math.max(0, target))
-          return slice[slice.length - 1] ?? ring.pts[0]
-        }
-        target -= ring.len
-      }
-      const last = p.fillRings[p.fillRings.length - 1].pts
-      return last[last.length - 1]
+    // 着色时笔尖位置 + 切向角（沿弧形横扫方向，供笔随运动改变方向）
+    const fillTip = (p: Prepared, fr: number) => tipAt(p.fillPath, p.fillCum, fr * p.fillLen)
+    // 落定提交时整形实色填满：兜底任何行扫到不了的死角（底尖/边缘月牙），保证成图彻底无缺色。
+    // 与填色同色、不可见，仅补足；动画过程仍由上面 fillClosed 一行行画出。
+    const solidFill = (tctx: CanvasRenderingContext2D, p: Prepared) => {
+      if (!p.s.fill || p.pts.length < 3) return
+      tctx.save()
+      tctx.fillStyle = p.s.fill
+      tctx.beginPath()
+      tctx.moveTo(p.pts[0][0], p.pts[0][1])
+      for (let k = 1; k < p.pts.length; k++) tctx.lineTo(p.pts[k][0], p.pts[k][1])
+      tctx.closePath()
+      tctx.fill()
+      tctx.restore()
     }
 
     const paintStroke = (tctx: CanvasRenderingContext2D, p: Prepared, L: number) => {
@@ -242,7 +249,7 @@ export function FreehandStage({
       tctx.fill()
     }
 
-    const drawPen = (pos: Pt, lifted: boolean) => {
+    const drawPen = (pos: Pt, angle: number, lifted: boolean) => {
       ctx.save()
       if (lifted) {
         // 抬笔投影
@@ -254,7 +261,8 @@ export function FreehandStage({
         ctx.restore()
       }
       ctx.translate(pos[0], pos[1] - (lifted ? 9 : 0))
-      ctx.rotate(-0.52)
+      // 笔随运动改变方向：笔杆朝运动的水平分量倾斜（右移→右倾、左移→左倾），始终竖立不倒插
+      ctx.rotate(0.62 * Math.cos(angle) - 0.12)
       // 笔尖
       ctx.fillStyle = '#1c1c1c'
       ctx.beginPath()
@@ -285,20 +293,26 @@ export function FreehandStage({
       ctx.drawImage(committed, 0, 0, W, H) // 已完成的笔（离屏，每笔只画一次）一次性贴上
       // 仅重绘当前正在画/填的一笔 + 笔尖
       let penPos: Pt = penFrom
+      let penAngle = 0
       let lifted = false
       const cur = prep[strokeI]
       if (mode === 'draw' && cur) {
         paintStroke(ctx, cur, drawn)
-        penPos = tipAt(cur.pts, cur.cum, drawn).pt
+        const tip = tipAt(cur.pts, cur.cum, drawn)
+        penPos = tip.pt
+        penAngle = tip.angle
       } else if (mode === 'fill' && cur) {
         fillClosed(ctx, cur, fillFr) // 填色在下
         paintStroke(ctx, cur, cur.total) // 周界在上
-        penPos = fillPen(cur, fillFr)
+        const tip = fillTip(cur, fillFr)
+        penPos = tip.pt
+        penAngle = tip.angle
       } else if (mode === 'travel') {
         penPos = lerp(penFrom, penTo, ease(Math.min(1, travelT)))
+        penAngle = Math.atan2(penTo[1] - penFrom[1], penTo[0] - penFrom[0])
         lifted = true
       }
-      if (mode !== 'end') drawPen(penPos, lifted)
+      if (mode !== 'end') drawPen(penPos, penAngle, lifted)
     }
 
     const frame = (ts: number) => {
@@ -334,9 +348,9 @@ export function FreehandStage({
         fillFr += dt / fillDur(cur)
         if (fillFr >= 1) {
           fillFr = 1
-          fillClosed(cctx, cur, 1) // 提交：先填满
+          solidFill(cctx, cur) // 提交：整形实色填满（兜底死角，彻底无缺色）
           paintStroke(cctx, cur, cur.total) // 再描周界（覆于填色之上）
-          penFrom = fillPen(cur, 1)
+          penFrom = fillTip(cur, 1).pt
           gotoTravelOrEnd()
         }
       } else if (mode === 'travel') {
