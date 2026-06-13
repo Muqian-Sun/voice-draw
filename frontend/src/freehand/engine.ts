@@ -22,6 +22,7 @@ export interface Stroke {
   width?: number // 基础笔宽 px（缺省 8）
   taper?: boolean // 开放笔画两端收笔（落笔/收笔由细到粗到细，缺省 true）
   fill?: string // 闭合时可选填充
+  smooth?: boolean // 缺省/true=向心 CR 平滑（有机曲线）；false=保持直线段（多边形/矩形不被圆角化）
 }
 
 /** 均匀 Catmull-Rom（张力隐含 0.5）在 p1→p2 段参数 t 处取点 */
@@ -53,6 +54,22 @@ export function sampleCenterline(pts: Pt[], closed = false, perSeg = 18): Pt[] {
     for (let k = 0; k < perSeg; k++) out.push(crPoint(p0, p1, p2, p3, k / perSeg))
   }
   out.push(closed ? at(0) : at(n - 1)) // 收尾点
+  return out
+}
+
+/** 直线段稠密化（不平滑）：每段线性插值出 perSeg 个点，供匀速显墨/墨带用，
+ *  保持多边形棱角（矩形/三角不被 CR 圆角化）。closed=true 末段回到首点。 */
+export function densifyLinear(pts: Pt[], closed = false, perSeg = 7): Pt[] {
+  const n = pts.length
+  if (n < 2) return pts.slice()
+  const out: Pt[] = []
+  const segCount = closed ? n : n - 1
+  for (let s = 0; s < segCount; s++) {
+    const a = pts[s]
+    const b = pts[(s + 1) % n]
+    for (let k = 0; k < perSeg; k++) out.push([a[0] + ((b[0] - a[0]) * k) / perSeg, a[1] + ((b[1] - a[1]) * k) / perSeg])
+  }
+  out.push(closed ? pts[0] : pts[n - 1])
   return out
 }
 
