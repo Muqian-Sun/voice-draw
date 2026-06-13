@@ -53,7 +53,7 @@ interface Prepared {
   total: number
 }
 
-const SPEED = 920 // 运笔速度 px/s
+const SPEED = 400 // 运笔速度 px/s（适中观感，便于看清绘制过程）
 const TRAVEL_S = 0.3 // 抬笔换行时长
 const ease = (t: number) => t * t * (3 - 2 * t)
 const lerp = (a: Pt, b: Pt, t: number): Pt => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
