@@ -61,11 +61,11 @@ const lerp = (a: Pt, b: Pt, t: number): Pt => [a[0] + (b[0] - a[0]) * t, a[1] + 
 export function FreehandStage({
   strokes = CAT_DEMO,
   title,
-  roughness = 2.5,
+  roughness = 0,
 }: {
   strokes?: Stroke[]
   title?: string
-  roughness?: number // 手绘抖动幅度 px（0=不抖，几何图元也带手画弓形感）
+  roughness?: number // 手绘抖动幅度 px（缺省 0=直线笔直、圆顺滑；>0 才加手画弓形感，可选）
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const [runId, setRunId] = useState(0)
