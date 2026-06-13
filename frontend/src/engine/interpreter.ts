@@ -291,16 +291,42 @@ function pickGeometry(o: SceneObject): Partial<SceneObject> {
     if (o[k] !== undefined) out[k] = o[k]
   }
   if (o.points) out.points = o.points
+  if (o.d) out.d = o.d // vpath：d 即几何，resize 经 scaleGeometry 缩放
   return out
 }
 
 /** 等比缩放几何字段（§5.5 对象大于画布时） */
+/** 缩放 vpath 的 d 坐标（绕其包围盒中心，factor s）——resize vpath 用（d 即几何，scale d=就地变大小）。
+ *  限定绝对 M/L/C/Q/Z：所有数值即 x,y,x,y… 序列。 */
+function scalePathD(d: string, s: number): string {
+  const nums = d.match(/-?\d*\.?\d+/g)?.map(Number) ?? []
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  for (let i = 0; i + 1 < nums.length; i += 2) {
+    minX = Math.min(minX, nums[i])
+    maxX = Math.max(maxX, nums[i])
+    minY = Math.min(minY, nums[i + 1])
+    maxY = Math.max(maxY, nums[i + 1])
+  }
+  const cx = (minX + maxX) / 2
+  const cy = (minY + maxY) / 2
+  let n = 0
+  return d.replace(/-?\d*\.?\d+/g, (m) => {
+    const c = n % 2 === 0 ? cx : cy
+    n++
+    return String(c + (parseFloat(m) - c) * s)
+  })
+}
+
 function scaleGeometry(geo: Partial<SceneObject>, s: number): Partial<SceneObject> {
   const out: Partial<SceneObject> = { ...geo }
   for (const k of ['radius', 'innerRadius', 'radiusX', 'radiusY', 'width', 'height', 'fontSize'] as const) {
     if (out[k] !== undefined) out[k] = out[k]! * s
   }
   if (out.points) out.points = out.points.map((p) => p * s)
+  if (out.d) out.d = scalePathD(out.d, s) // vpath：缩放 d 坐标
   return out
 }
 

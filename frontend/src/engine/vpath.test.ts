@@ -62,6 +62,35 @@ describe('vpath：贝塞尔矢量路径', () => {
     expect(right?.d).toBe('M100 0 L0 0 L0 40 Z')
   })
 
+  it('P2 编辑：resize 缩放 d（绕中心）→ 尺寸变、中心不动；move 平移；style 改色', () => {
+    const parsed = parseOps([
+      { op: 'create', shape: 'vpath', name: '眼', d: D, fill: '#000' }, // D 的 bbox=[60,60,280,240]，中心(200,180)
+      { op: 'resize', target: { byName: '眼' }, scale: 1.2 }, // 1.2× 不出界（避免 §5.5 clamp 干扰中心断言）
+      { op: 'style', target: { byName: '眼' }, fill: '#0074D9' },
+    ])
+    expect(parsed.ok).toBe(true)
+    if (!parsed.ok) return
+    const { state } = executeTransaction(createEmptyScene(), parsed.ops)
+    const o = state.objects[0]
+    const [bx, by, bw, bh] = getBBox(o)
+    expect(bw).toBeCloseTo(336, 0) // 280×1.2（resize 缩放 d 生效）
+    expect(bh).toBeCloseTo(288, 0) // 240×1.2
+    expect(bx + bw / 2).toBeCloseTo(200, 0) // 中心 x 不动（绕中心缩放）
+    expect(by + bh / 2).toBeCloseTo(180, 0) // 中心 y 不动
+    expect(o.fill).toBe('#0074D9') // style 改色生效
+  })
+
+  it('P2 编辑：move delta 平移 vpath（x 偏移，getBBox 整体右移）', () => {
+    const parsed = parseOps([
+      { op: 'create', shape: 'vpath', name: '球', d: D, fill: '#000' },
+      { op: 'move', target: { byName: '球' }, delta: [100, 0] },
+    ])
+    if (!parsed.ok) return
+    const { state } = executeTransaction(createEmptyScene(), parsed.ops)
+    const [bx] = getBBox(state.objects[0])
+    expect(bx).toBeCloseTo(160, 0) // 原 bx=60 + 平移 100
+  })
+
   it('多条命名 vpath：各自独立、按创建顺序 z 递增（插画=多命名 path）', () => {
     const parsed = parseOps([
       { op: 'create', shape: 'vpath', name: '身体', d: D },

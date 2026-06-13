@@ -287,7 +287,16 @@ function drawVPath(ctx: CanvasRenderingContext2D, o: SceneObject): void {
     return // d 语法非法 → 跳过（不崩）
   }
   ctx.save()
-  if (o.x || o.y) ctx.translate(o.x, o.y)
+  if (o.x || o.y) ctx.translate(o.x, o.y) // move：平移偏移
+  if (o.rotation) {
+    // rotate：绕 d 包围盒中心旋转（getBBox 按 §5.5 不计旋转，与图元一致）
+    const [bx, by, bw, bh] = pathLocalBBox(o.d)
+    const cx = bx + bw / 2
+    const cy = by + bh / 2
+    ctx.translate(cx, cy)
+    ctx.rotate((o.rotation * Math.PI) / 180)
+    ctx.translate(-cx, -cy)
+  }
   if (o.opacity !== undefined) ctx.globalAlpha = o.opacity
   // 柔和投影：每件极淡阴影 → 贴纸式层次（仅作用填充，描边时关掉防重影；接地阴影另补整体落地感）
   ctx.shadowColor = 'rgba(0,0,0,0.12)'
