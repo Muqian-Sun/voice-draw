@@ -62,6 +62,8 @@ export class WebSpeechTts implements TtsProvider {
       }
       const u = new SpeechSynthesisUtterance(text)
       u.lang = 'zh-CN'
+      u.pitch = 1.4 // 调高音调 → 无密钥兜底时也偏可爱（与豆包樱桃丸子音色风格对齐）
+      u.rate = 1.05
       u.onend = () => resolve()
       // cancel() 触发 error 事件（interrupted），同样视为本条结束
       u.onerror = () => resolve()
