@@ -16,7 +16,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
 import { getStroke } from 'perfect-freehand'
 import { CANVAS_WIDTH, CANVAS_HEIGHT } from '../dsl'
-import type { SceneObject, SceneState } from '../engine/scene'
+import { getBBox, type SceneObject, type SceneState } from '../engine/scene'
 import { objectToStrokes } from '../freehand/fromScene'
 import {
   cumulativeLengths,
@@ -241,8 +241,43 @@ function prepareObject(o: SceneObject): Prepared[] {
   return objectToStrokes(o).map((s, i) => prepareStroke(s, (o.z + 1) * 0x9e3779b1 + i))
 }
 
-/** v2.0 vpath：清晰矢量渲染（Path2D 填充+描边，非手绘墨线——精细插画质量优先）。
- *  d 为画布系绝对坐标，(x,y) 作平移偏移；fill 缺省取 gradient 起始色（暂不做真渐变）。 */
+/** 线性渐变（schema：angle 0=左→右 90=上→下），跨给定 bbox 铺设 */
+function linearGrad(
+  ctx: CanvasRenderingContext2D,
+  g: NonNullable<SceneObject['gradient']>,
+  bx: number,
+  by: number,
+  bw: number,
+  bh: number,
+): CanvasGradient {
+  const rad = ((g.angle ?? 90) * Math.PI) / 180
+  const cx = bx + bw / 2
+  const cy = by + bh / 2
+  const dx = (Math.cos(rad) * bw) / 2
+  const dy = (Math.sin(rad) * bh) / 2
+  const grad = ctx.createLinearGradient(cx - dx, cy - dy, cx + dx, cy + dy)
+  grad.addColorStop(0, g.from)
+  grad.addColorStop(1, g.to)
+  return grad
+}
+
+/** 从 d 抽坐标算局部包围盒（限定 M/L/C/Q/Z），供渐变铺设 */
+function pathLocalBBox(d: string): [number, number, number, number] {
+  const nums = d.match(/-?\d*\.?\d+/g)?.map(Number) ?? []
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  for (let i = 0; i + 1 < nums.length; i += 2) {
+    minX = Math.min(minX, nums[i])
+    maxX = Math.max(maxX, nums[i])
+    minY = Math.min(minY, nums[i + 1])
+    maxY = Math.max(maxY, nums[i + 1])
+  }
+  return Number.isFinite(minX) ? [minX, minY, maxX - minX, maxY - minY] : [0, 0, 0, 0]
+}
+
+/** v2.0 vpath：清晰矢量渲染（Path2D 填充+描边）+ 真渐变 + 柔和投影（贴纸级层次，确定性精修）。 */
 function drawVPath(ctx: CanvasRenderingContext2D, o: SceneObject): void {
   if (!o.d) return
   let path: Path2D
@@ -254,12 +289,20 @@ function drawVPath(ctx: CanvasRenderingContext2D, o: SceneObject): void {
   ctx.save()
   if (o.x || o.y) ctx.translate(o.x, o.y)
   if (o.opacity !== undefined) ctx.globalAlpha = o.opacity
-  const fill = o.fill ?? o.gradient?.from
-  if (fill) {
-    ctx.fillStyle = fill
+  // 柔和投影：每件极淡阴影 → 贴纸式层次（仅作用填充，描边时关掉防重影）
+  ctx.shadowColor = 'rgba(0,0,0,0.16)'
+  ctx.shadowBlur = 5
+  ctx.shadowOffsetY = 2.5
+  if (o.gradient) {
+    const [bx, by, bw, bh] = pathLocalBBox(o.d)
+    ctx.fillStyle = linearGrad(ctx, o.gradient, bx, by, bw, bh)
+    ctx.fill(path)
+  } else if (o.fill) {
+    ctx.fillStyle = o.fill
     ctx.fill(path)
   }
   if (o.stroke) {
+    ctx.shadowColor = 'transparent'
     ctx.strokeStyle = o.stroke
     ctx.lineWidth = o.strokeWidth ?? 2
     ctx.lineJoin = 'round'
@@ -269,10 +312,31 @@ function drawVPath(ctx: CanvasRenderingContext2D, o: SceneObject): void {
   ctx.restore()
 }
 
-/** 把一个对象完整画到 ctx：vpath 走清晰矢量，其余图元走手绘笔触烘焙 */
+/** 渐变大色块（天空/草地等背景）走清晰渐变填充（非手绘）——比纯色/手绘更精致 */
+function drawCrispFill(ctx: CanvasRenderingContext2D, o: SceneObject): void {
+  const [bx, by, bw, bh] = getBBox(o)
+  ctx.save()
+  if (o.opacity !== undefined) ctx.globalAlpha = o.opacity
+  ctx.fillStyle = o.gradient ? linearGrad(ctx, o.gradient, bx, by, bw, bh) : (o.fill ?? '#ffffff')
+  const r = o.cornerRadius ?? 0
+  if (r > 0 && typeof ctx.roundRect === 'function') {
+    ctx.beginPath()
+    ctx.roundRect(bx, by, bw, bh, r)
+    ctx.fill()
+  } else {
+    ctx.fillRect(bx, by, bw, bh)
+  }
+  ctx.restore()
+}
+
+/** 把一个对象完整画到 ctx：vpath/渐变背景走清晰矢量（含渐变+投影），其余图元走手绘笔触烘焙 */
 function bakeObject(ctx: CanvasRenderingContext2D, o: SceneObject): void {
   if (o.shape === 'vpath') {
     drawVPath(ctx, o)
+    return
+  }
+  if (o.gradient && o.shape === 'rect') {
+    drawCrispFill(ctx, o) // 渐变背景：清晰渐变（天空/草地）
     return
   }
   for (const p of prepareObject(o)) bakeStroke(ctx, p)
