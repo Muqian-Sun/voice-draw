@@ -57,9 +57,9 @@ interface Prepared {
 
 const SPEED = 400 // 运笔速度 px/s（适中观感，便于看清绘制过程）
 const TRAVEL_S = 0.3 // 抬笔换行时长
-const FILL_GAP = 15 // 着色笔道行距 px
-const FILL_PASS_SEC = 0.16 // 每道扫色时长 s（"慢慢一笔一笔"着色）
-const FILL_ALPHA = 1 // 笔色不透明：来回笔道是"过程"（看得见笔在涂），但上的是实色 → 成图实心、无浓淡交替
+const FILL_GAP = 10 // 着色笔道行距 px（细腻、不粗）
+const FILL_PASS_SEC = 0.1 // 每道扫色时长 s（"慢慢一笔一笔"着色）
+const FILL_PEN_W = 14 // 着色笔宽 px（每道用 perfect-freehand 两端收笔 → 触压感；略宽于行距 → 实色叠满无缝）
 const ease = (t: number) => t * t * (3 - 2 * t)
 const lerp = (a: Pt, b: Pt, t: number): Pt => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
 
@@ -143,8 +143,24 @@ export function FreehandStage({
     const fillable = (p: Prepared) => p.fillPasses.length > 0
     const fillDur = (p: Prepared) => Math.max(0.3, p.fillPasses.length * FILL_PASS_SEC) // 按笔道数定时长
 
-    // 用笔一道一道着色：clip 形内，逐道实色描（动画上看得见笔来回涂，实色叠满 → 成图实心、无浓淡交替），
-    // 当前道沿横向生长。fr=填色进度 0~1，映射到第几道 + 当前道完成比例。
+    // 用笔一道一道着色：clip 形内，每道用 perfect-freehand 描成**两端收笔**的实色笔道（细、有触压感），
+    // 相邻道略叠 → 实色无缝（无浓淡）。动画上看得见笔来回一道道涂。fr=填色进度 0~1。
+    const paintPass = (tctx: CanvasRenderingContext2D, fill: string, x0: number, x1: number, y: number) => {
+      const outline = getStroke(
+        [
+          [x0, y],
+          [x1, y],
+        ],
+        { size: FILL_PEN_W, thinning: 0, simulatePressure: false, start: { cap: false, taper: FILL_PEN_W * 1.1 }, end: { cap: false, taper: FILL_PEN_W * 1.1 } },
+      )
+      if (outline.length < 3) return
+      tctx.beginPath()
+      tctx.moveTo(outline[0][0], outline[0][1])
+      for (const pt of outline) tctx.lineTo(pt[0], pt[1])
+      tctx.closePath()
+      tctx.fillStyle = fill
+      tctx.fill()
+    }
     const fillClosed = (tctx: CanvasRenderingContext2D, p: Prepared, fr: number) => {
       const n = p.fillPasses.length
       if (n === 0 || !p.s.fill) return
@@ -154,27 +170,16 @@ export function FreehandStage({
       for (let k = 1; k < p.pts.length; k++) tctx.lineTo(p.pts[k][0], p.pts[k][1])
       tctx.closePath()
       tctx.clip()
-      tctx.globalAlpha = FILL_ALPHA
-      tctx.strokeStyle = p.s.fill
-      tctx.lineWidth = FILL_GAP * 1.4 // 略宽于行距 → 相邻道叠满无缝（实色不留行间空隙）
-      tctx.lineCap = 'round'
-      tctx.lineJoin = 'round'
       const prog = fr * n
       const full = Math.min(n, Math.floor(prog))
       for (let i = 0; i < full; i++) {
         const ps = p.fillPasses[i]
-        tctx.beginPath()
-        tctx.moveTo(ps.x0, ps.y)
-        tctx.lineTo(ps.x1, ps.y)
-        tctx.stroke() // 逐道描：动画上看得见笔一道道涂，实色叠满成实心
+        paintPass(tctx, p.s.fill, ps.x0, ps.x1, ps.y)
       }
       if (full < n) {
         const ps = p.fillPasses[full]
         const x = ps.x0 + (ps.x1 - ps.x0) * (prog - full)
-        tctx.beginPath()
-        tctx.moveTo(ps.x0, ps.y)
-        tctx.lineTo(x, ps.y)
-        tctx.stroke()
+        paintPass(tctx, p.s.fill, ps.x0, x, ps.y)
       }
       tctx.restore()
     }
