@@ -54,7 +54,9 @@ GOLDEN_LIVE=1 pnpm test golden                # B3/B4 真实 LLM 实跑（需 ba
 
 ## 第三方依赖列表
 
-除以下开源依赖外，**全部代码为本项目原创**：
+除以下开源依赖和云服务外，**全部代码为本项目原创**：
+
+**开源 npm 依赖**
 
 | 库 | 用途 |
 |----|------|
@@ -74,6 +76,15 @@ GOLDEN_LIVE=1 pnpm test golden                # B3/B4 真实 LLM 实跑（需 ba
 | tsx | TS 直跑（backend 开发期 + 前端 Prompt 生成脚本） |
 | concurrently | 一条命令并行启动前后端 |
 | Google Fonts（CDN 网页字体，非 npm 依赖） | 界面排版字体：展示标题 Syne · 编辑衬线 Fraunces · 数据等宽 Spline Sans Mono · 手写标识 Shantell Sans · 手写体 Caveat（由 `frontend/index.html` 的 `<link>` 加载） |
+
+**外部云服务依赖**
+
+| 服务 | 用途 | 降级方案 |
+|------|------|---------|
+| 火山引擎豆包流式 ASR（bigmodel_async） | 语音识别：麦克风音频 → 中文转写（实时流式，二进制帧协议） | 未配置 `VOLC_API_KEY` 时自动降级 mock 固定话术 / 浏览器 Web Speech API |
+| 火山方舟 doubao-seed-code-2.0 | 指令理解 LLM：中文口语 → 绘图 JSON 指令（parse/plan/planner 三模式） | 未配置 `ARK_API_KEY` 时 LLM 解析不可用，规则层系统指令仍可用 |
+| 火山豆包大模型语音合成 2.0（TTS） | 语音反馈：绘图结果 / 澄清 / 确认等文案 → 流式音频播报 | 未配置 `VOLC_TTS_APPID/TOKEN` 时自动降级浏览器 `speechSynthesis` |
+| 浏览器 Web Speech API | ASR 二级降级（无火山密钥 + 无 mock 时兜底） | 内置，无需配置 |
 
 > 新增依赖随对应 PR 同步更新本表。
 
