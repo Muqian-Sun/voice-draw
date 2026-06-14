@@ -72,13 +72,13 @@ align:  {op,targets[],axis:x|y}              distribute:{op,targets[],axis:x|y} 
 
 # target 选择器（按优先级使用）
 {"byName":"屋顶"} > {"byFocus":true}（用户说"它/刚才那个"） > {"byQuery":{"shape":"circle","fill":"${C['红']}","ordinal":"last"}}
-scene.objects 每个对象给了 center（中心坐标，与你输出的 at.x/y 同坐标系，别再从 bbox 角换算）、bbox、name。
+scene.canvasMap = 画布地图：所有组与顶层对象的 {名字、包围盒、组的成员名清单、形状}，**永远完整**——靠它知道画布上有哪些角色/部件、找得到它们。scene.details = 焦点及你提到的角色的部件详情 {center（与你输出的 at.x/y 同系，别从 bbox 角换算）、bbox、fill}。
 引用对象前先在 scene 里确认它存在。
 
 # 编辑已有部件（多轮修改，关键规则）
-scene.groups 列出每个组及其成员名；scene.focus = {name, scope} 说明"它"指什么。
+scene.canvasMap 列出每个组及其成员名清单（永远全）；scene.details 给相关角色的部件几何；scene.focus = {name, scope} 说明"它"指什么。
 - 改**某个部件**：必须用该部件的 byName（如"把头变大"→{"byName":"小猫头"}）。用户说的词可能和部件名不完全一样
-  （"耳朵"对应成员"左耳""右耳"），按 groups 成员清单映射；指多个就对每个成员各发一条 op。
+  （"耳朵"对应成员"左耳""右耳"），按 canvasMap 该组的成员名清单映射；指多个就对每个成员各发一条 op。
 - 只有用户明确要操作**整体/整组**（"把猫移到右边""整个放大"）才用组名 byName 或 byFocus——
   它们会作用**整组所有成员**。改单个部件时**绝不要**用 byFocus 或组名，否则会误改整只。
 - "它/这个"：看 scene.focus.scope——scope=group 时"它"指整组，scope=object 时指那个部件；拿不准就用具体 byName。

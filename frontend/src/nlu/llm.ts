@@ -1,113 +1,226 @@
 /**
  * LLM 理解层前端客户端（协议 §2）
  *
- * 职责：构建 SceneSummary（§1.6，含 >30 对象截断）→ 调 backend /api/llm/parse
+ * 职责：构建 SceneSummary（§1.6，分层场景上下文）→ 调 backend /api/llm/parse
  * → JSON.parse + zod + 业务校验（§2.3 四条）→ 失败重试 1 次（追加校验错误）
  * → 输出与规则层同构的 ParseResult。clear 永不来自 LLM（业务校验拦截）。
+ *
+ * 分层设计（治多角色复杂场景"看不全/找不到角色"）：
+ *   Layer 1 画布地图（永远全量）：所有组的 union 包围盒 + 成员名清单；未编组顶层对象摘要。
+ *           不受任何截断——LLM 无论画布多复杂都看得到完整角色清单。
+ *   Layer 2 聚焦详情（按需展开）：focus 所在组 + utterance 提到名字的组/对象，展开部件级细节。
+ *           其余组只在地图层、不展开部件。展开部件总数 ≤ DETAIL_BUDGET（地图不计入）。
  */
 import { z } from 'zod'
 import { opSchema, type Op } from '../dsl'
-import { getBBox, type SceneState } from '../engine/scene'
-import { COLOR_WORDS, SHAPE_ALIASES } from '../shared/lexicon'
+import { getBBox, type SceneObject, type SceneState } from '../engine/scene'
 
-// ---------- SceneSummary（协议 §1.6） ----------
+// ---------- SceneSummary（协议 §1.6，v2 分层） ----------
+
+/** 画布地图层：一个条目代表一个组或未编组顶层对象（永远全量给出） */
+export interface CanvasMapEntry {
+  /** 组名 / 对象名（对象有名时）/ 对象 id（无名时） */
+  name: string
+  /** 'group' | 'object' */
+  kind: 'group' | 'object'
+  /** union 包围盒（组内所有成员合并；单对象即自身 bbox）[x, y, w, h] */
+  bbox: [number, number, number, number]
+  /** 组/对象的几何中心 */
+  center: [number, number]
+  /** 成员数（group 才有；object 为 1） */
+  memberCount: number
+  /** 成员名清单（group 才有，对象可由此精确引用） */
+  members?: string[]
+  /** 组内对象的形状摘要（去重；group 才有，帮助 LLM 判断主体类型） */
+  shapes?: string[]
+}
+
+/** 详情层：已展开部件级细节的对象列表 */
+export interface DetailObject {
+  id: string
+  name?: string
+  shape: string
+  fill?: string
+  stroke?: string
+  center: [number, number]
+  bbox: [number, number, number, number]
+  z: number
+  groupId?: string
+}
 
 export interface SceneSummary {
   canvas: { width: 1024; height: 768 }
-  objects: Array<{
-    id: string
-    name?: string
-    shape: string
-    fill?: string
-    stroke?: string
-    center: [number, number] // 图形中心（与输出 at.x/y 同坐标系，免去从 bbox 角换算——尤其圆）
-    bbox: [number, number, number, number]
-    z: number
-    groupId?: string
-  }>
+  /** Layer 1：画布地图，永远全量（不截断） */
+  canvasMap: CanvasMapEntry[]
+  /** Layer 2：已展开部件详情（focus 所在组 + utterance 提及的组/对象） */
+  details: DetailObject[]
   focusId?: string
   /** 人类可读焦点 + 粒度，让模型清楚"它"指什么、byFocus 会动什么（§5.1 v1.1） */
   focus?: { name?: string; id: string; scope: 'group' | 'object' }
-  /** 组结构：组名 → 成员名清单。模型据此精确引用部件、避免误用组名/byFocus 动整组 */
-  groups?: Array<{ name: string; members: string[] }>
   lastTransaction?: { utterance: string; opCount: number }
+  /**
+   * 是否有组因预算不足未在 details 中展开（地图层仍全量）。
+   * 取代旧版"对象数量截断"的粗暴 truncated 标识。
+   */
   truncated?: true
 }
 
-const MAX_SCENE_OBJECTS = 30
-const KEEP_RECENT = 10
+/** 展开部件级详情的预算（总部件数上限，地图层不计入） */
+const DETAIL_BUDGET = 40
 
-/** >30 对象时截断：焦点 + utterance 特征匹配（形状/颜色词）+ 最近创建 10 个（协议 §2.2） */
+/** 计算 union 包围盒（合并多个对象的 [x,y,w,h]） */
+function unionBBox(objects: SceneObject[]): [number, number, number, number] {
+  if (objects.length === 0) return [0, 0, 0, 0]
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const o of objects) {
+    const [bx, by, bw, bh] = getBBox(o)
+    minX = Math.min(minX, bx)
+    minY = Math.min(minY, by)
+    maxX = Math.max(maxX, bx + bw)
+    maxY = Math.max(maxY, by + bh)
+  }
+  return [Math.round(minX), Math.round(minY), Math.round(maxX - minX), Math.round(maxY - minY)]
+}
+
+/**
+ * 分层场景上下文（协议 §2.2 v2）：
+ *   画布地图永远全量（治"找不到角色"）；
+ *   聚焦详情只对相关组展开（治 token 随对象数线性膨胀）。
+ */
 export function buildSceneSummary(
   scene: SceneState,
   utterance: string,
   lastTransaction?: { utterance: string; opCount: number },
 ): SceneSummary {
-  let objects = scene.objects
-  let truncated = false
-  if (objects.length > MAX_SCENE_OBJECTS) {
-    const mentionedShapes = new Set(
-      Object.entries(SHAPE_ALIASES)
-        .filter(([w]) => utterance.includes(w))
-        .map(([, a]) => a.kind),
-    )
-    const mentionedFills = new Set(
-      Object.entries(COLOR_WORDS)
-        .filter(([w]) => utterance.includes(w))
-        .map(([, hex]) => hex),
-    )
-    const recentIds = new Set(
-      [...objects]
-        .sort((a, b) => b.createdSeq - a.createdSeq)
-        .slice(0, KEEP_RECENT)
-        .map((o) => o.id),
-    )
-    // 话术提到的组名 → 整组保留几何细节（治"找不到白雪公主"：其部件名不含角色名，仅靠组名匹配）
-    const mentionedGroups = new Set(
-      scene.objects
-        .map((o) => o.groupId)
-        .filter((gid): gid is string => gid !== undefined && utterance.includes(gid)),
-    )
-    objects = objects.filter(
-      (o) =>
-        o.id === scene.focusId ||
-        recentIds.has(o.id) ||
-        mentionedShapes.has(o.shape) ||
-        (o.fill !== undefined && mentionedFills.has(o.fill)) ||
-        (o.name !== undefined && utterance.includes(o.name)) ||
-        (o.groupId !== undefined && mentionedGroups.has(o.groupId)),
-    )
-    truncated = true
-  }
-  // 组结构汇总（成员名清单）：基于完整 scene.objects 计算，不受截断影响
-  // → 无论对象几何细节怎么截断，LLM 永远看得到画布上所有组名+各组成员名
-  const groupMap = new Map<string, string[]>()
+  // ---- Step 1：按 groupId 分桶 ----
+  const groupBuckets = new Map<string, SceneObject[]>()   // groupId → 成员列表
+  const ungrouped: SceneObject[] = []                     // 未编组对象
   for (const o of scene.objects) {
-    if (o.groupId === undefined) continue
-    const list = groupMap.get(o.groupId) ?? []
-    if (o.name !== undefined) list.push(o.name)
-    groupMap.set(o.groupId, list)
+    if (o.groupId !== undefined) {
+      const bucket = groupBuckets.get(o.groupId) ?? []
+      bucket.push(o)
+      groupBuckets.set(o.groupId, bucket)
+    } else {
+      ungrouped.push(o)
+    }
   }
-  const groups = [...groupMap.entries()].map(([name, members]) => ({ name, members }))
 
-  const focusObj = scene.focusId !== undefined ? scene.objects.find((o) => o.id === scene.focusId) : undefined
+  // ---- Step 2：构建画布地图（Layer 1，永远全量） ----
+  const canvasMap: CanvasMapEntry[] = []
+
+  // 2a. 每个组
+  for (const [groupId, members] of groupBuckets) {
+    const ub = unionBBox(members)
+    const cx = Math.round(ub[0] + ub[2] / 2)
+    const cy = Math.round(ub[1] + ub[3] / 2)
+    const memberNames = members.map((o) => o.name).filter((n): n is string => n !== undefined)
+    const shapes = [...new Set(members.map((o) => o.shape))]
+    canvasMap.push({
+      name: groupId,
+      kind: 'group',
+      bbox: ub,
+      center: [cx, cy],
+      memberCount: members.length,
+      members: memberNames.length > 0 ? memberNames : undefined,
+      shapes,
+    })
+  }
+
+  // 2b. 未编组的顶层对象
+  for (const o of ungrouped) {
+    const [bx, by, bw, bh] = getBBox(o)
+    const cx = Math.round(bx + bw / 2)
+    const cy = Math.round(by + bh / 2)
+    const label = o.name ?? o.id
+    canvasMap.push({
+      name: label,
+      kind: 'object',
+      bbox: [bx, by, bw, bh],
+      center: [cx, cy],
+      memberCount: 1,
+    })
+  }
+
+  // ---- Step 3：确定需展开详情的范围（Layer 2） ----
+  // 3a. focus 所在组 / 对象
+  const focusObj = scene.focusId !== undefined
+    ? scene.objects.find((o) => o.id === scene.focusId)
+    : undefined
+  const relevantGroups = new Set<string>()
+  const relevantIds = new Set<string>()
+
+  if (focusObj !== undefined) {
+    if (focusObj.groupId !== undefined) {
+      relevantGroups.add(focusObj.groupId)
+    } else {
+      relevantIds.add(focusObj.id)
+    }
+  }
+
+  // 3b. utterance 提及名字的组 / 对象
+  for (const [groupId] of groupBuckets) {
+    if (utterance.includes(groupId)) relevantGroups.add(groupId)
+  }
+  for (const o of scene.objects) {
+    if (o.name !== undefined && utterance.includes(o.name)) {
+      if (o.groupId !== undefined) {
+        relevantGroups.add(o.groupId)
+      } else {
+        relevantIds.add(o.id)
+      }
+    }
+  }
+
+  // ---- Step 4：在预算内展开相关组/对象的部件详情 ----
+  const details: DetailObject[] = []
+  let budget = DETAIL_BUDGET
+  let truncated = false
+
+  function toDetail(o: SceneObject): DetailObject {
+    const [bx, by, bw, bh] = getBBox(o)
+    return {
+      id: o.id,
+      ...(o.name !== undefined && { name: o.name }),
+      shape: o.shape,
+      ...(o.fill !== undefined && { fill: o.fill }),
+      ...(o.stroke !== undefined && { stroke: o.stroke }),
+      center: [Math.round(bx + bw / 2), Math.round(by + bh / 2)] as [number, number],
+      bbox: [bx, by, bw, bh] as [number, number, number, number],
+      z: o.z,
+      ...(o.groupId !== undefined && { groupId: o.groupId }),
+    }
+  }
+
+  // 先展开相关组
+  for (const groupId of relevantGroups) {
+    const members = groupBuckets.get(groupId)
+    if (members === undefined) continue
+    if (budget <= 0) {
+      truncated = true
+      break
+    }
+    const toAdd = members.slice(0, budget)
+    if (toAdd.length < members.length) truncated = true
+    for (const o of toAdd) details.push(toDetail(o))
+    budget -= toAdd.length
+  }
+
+  // 再展开相关未编组对象（逐个，各占 1 预算）
+  for (const id of relevantIds) {
+    if (budget <= 0) {
+      truncated = true
+      break
+    }
+    const o = scene.objects.find((x) => x.id === id)
+    if (o === undefined) continue
+    details.push(toDetail(o))
+    budget--
+  }
 
   return {
     canvas: { width: 1024, height: 768 },
-    objects: objects.map((o) => {
-      const [bx, by, bw, bh] = getBBox(o)
-      return {
-        id: o.id,
-        ...(o.name !== undefined && { name: o.name }),
-        shape: o.shape,
-        ...(o.fill !== undefined && { fill: o.fill }),
-        ...(o.stroke !== undefined && { stroke: o.stroke }),
-        center: [Math.round(bx + bw / 2), Math.round(by + bh / 2)] as [number, number],
-        bbox: [bx, by, bw, bh] as [number, number, number, number],
-        z: o.z,
-        ...(o.groupId !== undefined && { groupId: o.groupId }),
-      }
-    }),
+    canvasMap,
+    details,
     ...(scene.focusId !== undefined && {
       focusId: scene.focusId,
       focus: {
@@ -116,7 +229,6 @@ export function buildSceneSummary(
         scope: scene.focusScope ?? 'object',
       },
     }),
-    ...(groups.length > 0 && { groups }),
     ...(lastTransaction !== undefined && { lastTransaction }),
     ...(truncated && { truncated: true as const }),
   }
