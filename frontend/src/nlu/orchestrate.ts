@@ -11,10 +11,17 @@
  * 性能优化：串行 N×~37s ≈ 数分钟 → 并发取 LLM（非流式）串行应用 ≈ 单次 ~40s；
  *   ID 生成走串行 apply，不冲突。
  * 背景 z 垫底：背景在 baseScene 之上创建（maxZ+1/+2），后续主体对象从更高 z 开始，天然在背景之上。
+ *
+ * 隔离执行（fix/orch-isolated-subplan）：
+ *   每个子计划在「只含背景的基底场景」上隔离执行，不在累积共享场景执行。
+ *   这样 byName/mirror/ref 解析只可能命中该角色自己刚画的部件，
+ *   消除"角色B画眼睛 mirror about:脸 → 解析到角色A的脸"等跨角色串台问题。
+ *   编组直接按"非背景对象"全归该角色组（不依赖 applyAutoGroup 的 <2 门槛）。
+ *   合并时重分配全局唯一 id（`{旧id}@{label}`），z 在累积场景之上递增。
  */
 import { applyAutoGroup } from '../engine/history'
 import { executeTransaction } from '../engine/interpreter'
-import { type SceneState, getBBox } from '../engine/scene'
+import { type SceneObject, type SceneState, getBBox } from '../engine/scene'
 import type { Op } from '../dsl'
 import { type LlmCallContext, parseWithLlm } from './llm'
 import { planLayout } from './planner'
@@ -255,7 +262,13 @@ export async function orchestrateSubplans(
   // Step 4: 并发触发所有角色的 LLM 调用（非流式 parseWithLlm）
   // 以 planLayout + 背景应用后的 scene 为共享上下文基线；所有角色同时请求，
   // LLM 耗时从 N×串行 变成 max(各角色) 并行。
-  const bgScene = scene  // 背景已应用后的基准，供所有子计划共享读取
+  const bgScene = scene  // 背景已应用后的基准，供所有子计划共享读取（不再修改）
+
+  // 背景对象 id 集合（合并时排除，避免重复 push 背景）
+  const bgIds = new Set(bgScene.objects.map((o) => o.id))
+
+  // 全局 z 计数器：从背景之上开始，各角色对象依次递增，保证层次不串
+  let runningZ = bgScene.objects.reduce((m, o) => Math.max(m, o.z), 0)
 
   // Step 5: 谁先画好谁先上屏（chain 串行保证 scene 读写无竞态）
   // 每个 LLM 请求完成时，把"应用+上屏"动作排入串行 chain 末尾 → 先完成先排进 → 先出现
@@ -284,18 +297,46 @@ export async function orchestrateSubplans(
             cb.onLog(`「${s.label}」未画成，跳过`)
             return
           }
-          const before = scene
-          const ex = executeTransaction(scene, ops)
-          if (ex.state === before) {
+
+          // ── 隔离执行：以 bgScene（只含背景）为基底执行该角色的 ops ──
+          // byName/mirror/ref 解析作用域仅限该角色刚画的部件，彻底消除跨角色串台。
+          const ex = executeTransaction(bgScene, ops)
+
+          // 取出该角色新建的对象（非背景对象）
+          const newObjs = ex.state.objects.filter((o) => !bgIds.has(o.id))
+          if (newObjs.length === 0) {
             cb.onLog(`「${s.label}」未画成，跳过`)
             return
           }
-          let s2 = applyAutoGroup(before, ex.state, s.label)
 
-          // fit 前后记录 bbox 日志（诊断"矮人偏大/框太小"等问题）
-          const pre = groupBBox(s2, s.label)
-          s2 = fitGroupToBox(s2, s.label, { cx: s.cx, cy: s.cy, w: s.w, h: s.h })
-          const post = groupBBox(s2, s.label)
+          // ── 直接编组（不经 applyAutoGroup，无 <2 门槛）+ fitGroupToBox ──
+          // 给所有非背景对象赋 groupId = s.label；即使只有 1 个部件也编组。
+          const grouped: SceneObject[] = newObjs.map((o) => ({ ...o, groupId: s.label }))
+
+          // 在临时 scene（背景 + 已编组的该角色对象）上执行 fit
+          const tmpScene: SceneState = {
+            ...bgScene,
+            objects: [...bgScene.objects, ...grouped],
+          }
+          const pre = groupBBox(tmpScene, s.label)
+          const fittedScene = fitGroupToBox(tmpScene, s.label, { cx: s.cx, cy: s.cy, w: s.w, h: s.h })
+          const fittedObjs = fittedScene.objects.filter((o) => !bgIds.has(o.id))
+          const post = groupBBox(fittedScene, s.label)
+
+          // ── 重分配全局唯一 id + z，合并进累积 scene ──
+          // 各角色隔离执行都从 bgScene.seq 起编，id 会重复（如都有 vpath#3）；
+          // 重分配 id = `{旧id}@{s.label}` 保证全局唯一；角色内对象靠 name/groupId 互引，
+          // 不靠 id 互相引用，故重分配 id 只改 id 字段，安全。
+          const renamedObjs: SceneObject[] = fittedObjs.map((o) => {
+            runningZ++
+            return {
+              ...o,
+              id: `${o.id}@${s.label}`,
+              groupId: s.label,
+              z: runningZ,
+            }
+          })
+
           const overflow = post.w > s.w + 8 || post.h > s.h + 8
           cb.onLog(
             `▸ ${s.label}: 画${ops.length}笔(预算${budget}) 框${Math.round(s.w)}×${Math.round(s.h)}` +
@@ -304,7 +345,11 @@ export async function orchestrateSubplans(
             (overflow ? ' ⚠超框' : ''),
           )
 
-          scene = s2
+          // 把该角色重分配后的对象追加进累积 scene（背景对象已在 scene.objects 中，不重复）
+          scene = {
+            ...scene,
+            objects: [...scene.objects, ...renamedObjs],
+          }
           painted++
           if (!firstPaint) { firstPaint = true; cb.onFirstPaint?.() }
           cb.onScene(scene)
