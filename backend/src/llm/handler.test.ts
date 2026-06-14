@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import { FIRST_TOKEN_TIMEOUT_MS, buildMessages, extractSseDelta } from './handler.js'
-import { SYSTEM_PROMPT } from './prompt.generated.js'
+import { PLANNER_PROMPT, SYSTEM_PROMPT } from './prompt.generated.js'
 
 describe('buildMessages', () => {
   const base = { utterance: '画一个雪人', mode: 'plan' as const, scene: { objects: [] } }
@@ -43,9 +43,35 @@ describe('extractSseDelta', () => {
 })
 
 describe('首 token 超时（协议 §2.3）', () => {
-  it('parse 8s / plan 20s（均关思考，首 token 快）', () => {
+  it('parse 8s / plan 20s / layout 8s（layout 输出小，复用 parse 档）', () => {
     expect(FIRST_TOKEN_TIMEOUT_MS.parse).toBe(8000)
     expect(FIRST_TOKEN_TIMEOUT_MS.plan).toBe(20000)
+    expect(FIRST_TOKEN_TIMEOUT_MS.layout).toBe(8000)
+  })
+})
+
+describe('mode:layout → PLANNER_PROMPT（按角色拆子计划 Phase 1）', () => {
+  const layoutBase = { utterance: '画白雪公主和七个小矮人', mode: 'layout' as const, scene: { objects: [] } }
+
+  it('mode=layout 时 system prompt 用 PLANNER_PROMPT（布局规划器）', () => {
+    const m = buildMessages(layoutBase)
+    expect(m[0]).toEqual({ role: 'system', content: PLANNER_PROMPT })
+    expect(m[0].content).not.toBe(SYSTEM_PROMPT)
+  })
+
+  it('mode=layout 时 user 内容含 utterance 与 mode', () => {
+    const m = buildMessages(layoutBase)
+    expect(m).toHaveLength(2)
+    const payload = JSON.parse(m[1].content as string)
+    expect(payload.utterance).toBe('画白雪公主和七个小矮人')
+    expect(payload.mode).toBe('layout')
+  })
+
+  it('PLANNER_PROMPT 包含关键规划指令', () => {
+    expect(PLANNER_PROMPT).toContain('布局规划器')
+    expect(PLANNER_PROMPT).toContain('subjects')
+    expect(PLANNER_PROMPT).toContain('1024x768')
+    expect(PLANNER_PROMPT).toContain('白雪公主')
   })
 })
 
