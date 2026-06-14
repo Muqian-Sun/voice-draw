@@ -75,6 +75,20 @@ export function resolveTarget(state: SceneState, sel: TargetSelector, preferRece
     return obj ? { ok: true, obj } : { ok: false, error: err('TARGET_NOT_FOUND', `画布上没有 ${sel.byId}`) }
   }
   if ('byName' in sel) {
+    // 「组名/部件名」限定：多角色场景里 裙子/头/左眼 等名字跨组碰撞，模型自然写 "白雪公主/裙子" 消歧。
+    // 拆出 group/part，先按"该组内的该部件"精确定位，命中即用（消除跨组 AMBIGUOUS）。
+    const slash = sel.byName.indexOf('/')
+    if (slash > 0 && slash < sel.byName.length - 1) {
+      const groupName = sel.byName.slice(0, slash)
+      const partName = sel.byName.slice(slash + 1)
+      const scoped = state.objects.filter((o) => o.name === partName && o.groupId === groupName)
+      if (scoped.length === 1) return { ok: true, obj: scoped[0] }
+      if (scoped.length > 1) {
+        if (preferRecent) return { ok: true, obj: scoped.reduce((a, b) => (b.createdSeq > a.createdSeq ? b : a)) }
+        return { ok: false, error: err('AMBIGUOUS_TARGET', `「${groupName}」组里有 ${scoped.length} 个「${partName}」`, scoped.map((o) => o.id)) }
+      }
+      // scoped 没命中 → 落到下面把整串当普通 name/组名解析（容错：组名写错、或名字里真含"/"）
+    }
     const hits = state.objects.filter((o) => o.name === sel.byName)
     if (hits.length === 0) {
       // 名称也可指组（"把雪人移到右边"）：命中任一成员，几何类 Op 经组提升作用整组（§5.6）
