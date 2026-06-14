@@ -463,6 +463,16 @@ function bakeObject(ctx: CanvasRenderingContext2D, o: SceneObject): void {
   if (o.pattern) overlayPattern(ctx, prepared, o.pattern) // v1.7 纹理叠在底色上
 }
 
+/** 单部件渲染失败（如非法渐变色 addColorStop 抛错）不得拖垮整批：跳过它，保留其余部件 */
+function safeBake(ctx: CanvasRenderingContext2D, o: SceneObject): void {
+  try {
+    bakeObject(ctx, o)
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn(`[freehand] 跳过渲染失败部件 ${o.id}（${o.name ?? o.shape}）：${(e as Error).message}`)
+  }
+}
+
 /** 主体（全部 vpath）并集包围盒——背景=非 vpath，识别干净 */
 function vpathUnionBBox(objs: SceneObject[]): [number, number, number, number] | null {
   let minX = Infinity
@@ -531,6 +541,7 @@ export const FreehandSceneStage = forwardRef<FreehandCaptureHandle, { scene: Sce
   // 跨渲染持久的绘制状态
   const committedRef = useRef<HTMLCanvasElement | null>(null) // 已落定对象的离屏画布
   const bakedSigRef = useRef<Map<string, string>>(new Map()) // id → 已烘焙的签名
+  const firstSceneRef = useRef(true) // 首帧（刷新恢复的持久化场景）直接静态烘焙，不重放逐笔动画
   const queueRef = useRef<QueueItem[]>([]) // 待逐笔动画的对象
   const animRef = useRef<AnimState | null>(null)
   const dprRef = useRef(2)
@@ -558,7 +569,7 @@ export const FreehandSceneStage = forwardRef<FreehandCaptureHandle, { scene: Sce
             drawGroundShadow(tctx, subjT)
             groundT = true
           }
-          bakeObject(tctx, o)
+          safeBake(tctx, o)
         }
         return c.toDataURL('image/png')
       },
@@ -611,7 +622,7 @@ export const FreehandSceneStage = forwardRef<FreehandCaptureHandle, { scene: Sce
     // 其余图元逐笔烘焙进 committed（含纹理叠加）。记签名。
     const bakeAnim = (a: AnimState) => {
       if (a.obj && a.obj.shape === 'vpath') {
-        bakeObject(cctx, a.obj) // 手绘轨迹只用于过程动画，落定换清晰矢量
+        safeBake(cctx, a.obj) // 手绘轨迹只用于过程动画，落定换清晰矢量
       } else {
         for (const p of a.prepared) bakeStroke(cctx, p)
         if (a.pattern) overlayPattern(cctx, a.prepared, a.pattern) // v1.7 纹理叠在底色上
@@ -744,6 +755,13 @@ export const FreehandSceneStage = forwardRef<FreehandCaptureHandle, { scene: Sce
     const ids = new Set(objs.map((o) => o.id))
     const baked = bakedSigRef.current
 
+    // 刷新恢复：首帧把持久化场景所有对象直接标记为"已落定"→ 走下方 committed 静态重建、不入逐笔动画队列。
+    // （否则 bakedSigRef 挂载为空 → 恢复对象全被判为新增 → 整幅重放绘制，即"刷新就重画"。）
+    if (firstSceneRef.current) {
+      firstSceneRef.current = false
+      for (const o of objs) baked.set(o.id, sigOf(o))
+    }
+
     // 删除的对象：从已烘焙集移除（重建时不再画 → 抹除/橡皮擦）
     for (const id of [...baked.keys()]) if (!ids.has(id)) baked.delete(id)
 
@@ -794,7 +812,7 @@ export const FreehandSceneStage = forwardRef<FreehandCaptureHandle, { scene: Sce
         groundDrawn = true
       }
       if (!baked.has(o.id)) continue
-      bakeObject(cctx, o)
+      safeBake(cctx, o)
     }
 
     // 重启循环：播放新增/改动对象的逐笔动画；无新活时也渲一帧（更新选中框/抹除）
