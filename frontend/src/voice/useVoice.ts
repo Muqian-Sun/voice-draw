@@ -180,6 +180,7 @@ export function useVoice({ onLog, onUtterance, onPartial }: UseVoiceOptions) {
         preSpeechPadMs: 320, // 句首留白，配合 RING_SIZE 回填，避免首字被吃
         onSpeechStart: () => {
           if (ttsActiveRef.current) return // 半双工：播报期间不开识别会话
+          if (stateRef.current === 'parsing' || stateRef.current === 'executing') return // 绘画/解析中：不开识别会话（边画边听易误触发新指令）
           speakingRef.current = true
           setHearing(true)
           armIdle() // 有人声 → 重置无声休眠计时
