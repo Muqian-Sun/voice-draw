@@ -443,12 +443,33 @@ export default function App() {
               return
             }
 
-            // 回滚渐进内容，退回缓冲模式
-            if (painted > 0) {
-              historyRef.current = base
-              setHistory(base)
+            // 流式终验未过（plan op 总数超限/交付与清单不齐/尾部 JSON 不合法）但已画出有效部件：
+            // 保留提交、绝不回滚清空——每个流式部件都已逐 op 校验(opSchema)+执行(forwardRetry)过，
+            // 终验那点是聚合层面的瑕疵，不该牵连已画好的（修"画着画着前面的没了"，如老虎 32 op>28）。
+            if (!stream.ok && painted > 0) {
+              advance(true)
+              const groupName = mode === 'plan' ? (extractPlanSubject(utterance) ?? undefined) : undefined
+              const committed = commitIncremental(base, work, { autoGroupName: groupName })
+              historyRef.current = committed
+              setHistory(committed)
+              pushLog('warn', `流式终验未过（${stream.error}），但 ${painted} 件已逐 op 校验通过 → 保留提交不清空`)
+              setMetrics((m) => ({
+                ...m,
+                llmPlan: m.llmPlan + (mode === 'plan' ? 1 : 0),
+                llmParse: m.llmParse + (mode === 'parse' ? 1 : 0),
+                last: `${mode}·${painted}件·部分提交`,
+              }))
+              if (groupName !== undefined && committed.scene !== work) {
+                pushLog('info', `已自动编组「${groupName}」（整组移动/缩放/删除生效）`)
+              }
+              say(mode === 'plan' ? '画好啦' : '好了') // painted>0 → 含 create → 播完成语
+              recordSuccess(utterance, [])
+              if (mode === 'plan') suggestAfterPlan()
+              return
             }
-            pushLog('warn', `流式路径未完成（${stream.ok ? '执行中断' : stream.error}）→ 回退缓冲模式…`)
+
+            // 一件都没画成（painted===0）→ 回退缓冲重解（此处 painted 必为 0，无已画内容可回滚）
+            pushLog('warn', `流式路径未完成（${stream.ok ? '空结果' : stream.error}）→ 回退缓冲模式…`)
             const llm = await parseWithLlm(utterance, mode, {
               scene: historyRef.current.scene,
               asrAlternatives: utterance !== trimmed ? [trimmed] : [],
