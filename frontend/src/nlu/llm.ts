@@ -62,19 +62,27 @@ export function buildSceneSummary(
         .slice(0, KEEP_RECENT)
         .map((o) => o.id),
     )
+    // 话术提到的组名 → 整组保留几何细节（治"找不到白雪公主"：其部件名不含角色名，仅靠组名匹配）
+    const mentionedGroups = new Set(
+      scene.objects
+        .map((o) => o.groupId)
+        .filter((gid): gid is string => gid !== undefined && utterance.includes(gid)),
+    )
     objects = objects.filter(
       (o) =>
         o.id === scene.focusId ||
         recentIds.has(o.id) ||
         mentionedShapes.has(o.shape) ||
         (o.fill !== undefined && mentionedFills.has(o.fill)) ||
-        (o.name !== undefined && utterance.includes(o.name)),
+        (o.name !== undefined && utterance.includes(o.name)) ||
+        (o.groupId !== undefined && mentionedGroups.has(o.groupId)),
     )
     truncated = true
   }
-  // 组结构汇总（成员名清单），供模型精确引用部件
+  // 组结构汇总（成员名清单）：基于完整 scene.objects 计算，不受截断影响
+  // → 无论对象几何细节怎么截断，LLM 永远看得到画布上所有组名+各组成员名
   const groupMap = new Map<string, string[]>()
-  for (const o of objects) {
+  for (const o of scene.objects) {
     if (o.groupId === undefined) continue
     const list = groupMap.get(o.groupId) ?? []
     if (o.name !== undefined) list.push(o.name)

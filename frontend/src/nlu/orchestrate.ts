@@ -256,7 +256,11 @@ export async function orchestrateSubplans(
   // 以 planLayout + 背景应用后的 scene 为共享上下文基线；所有角色同时请求，
   // LLM 耗时从 N×串行 变成 max(各角色) 并行。
   const bgScene = scene  // 背景已应用后的基准，供所有子计划共享读取
-  const pending = subjects.map(async (s) => {
+
+  // Step 5: 谁先画好谁先上屏（chain 串行保证 scene 读写无竞态）
+  // 每个 LLM 请求完成时，把"应用+上屏"动作排入串行 chain 末尾 → 先完成先排进 → 先出现
+  let chain = Promise.resolve()
+  const tasks = subjects.map((s) => {
     // 按目标框面积给笔数预算：小框（矮人等）少画快出，大框（主角）多画精细。
     // 线性映射：budget = clamp(round(w*h / 4000), 10, 22)
     // 约 200×200=40000 → 10笔；约 300×300=90000 → 22笔（取上限）。
@@ -270,47 +274,53 @@ export async function orchestrateSubplans(
       `整体画大、居中于画布中心 (512,384)（不用管它最终摆在哪、多大，我会自动缩放摆放进画面）` +
       (style !== undefined ? `，画风：${style}` : '') +
       `。用约 ${budget} 个部件画到位、抓住${s.label}的特征即可、不要堆冗余细节（画得越精简越快，但部件要完整）。`
-    try {
-      const res = await parseWithLlm(prompt, 'plan', { ...ctx, scene: bgScene })
-      return { s, ops: res.ok ? res.result.ops : [] as Op[] }
-    } catch {
-      return { s, ops: [] as Op[] }
-    }
+
+    const request = parseWithLlm(prompt, 'plan', { ...ctx, scene: bgScene })
+      .then((res) => {
+        const ops: Op[] = res.ok ? res.result.ops : []
+        // 把"应用+上屏"排进串行 chain 末尾：谁先 resolve 谁先排→先上屏
+        chain = chain.then(() => {
+          if (ops.length === 0) {
+            cb.onLog(`「${s.label}」未画成，跳过`)
+            return
+          }
+          const before = scene
+          const ex = executeTransaction(scene, ops)
+          if (ex.state === before) {
+            cb.onLog(`「${s.label}」未画成，跳过`)
+            return
+          }
+          let s2 = applyAutoGroup(before, ex.state, s.label)
+
+          // fit 前后记录 bbox 日志（诊断"矮人偏大/框太小"等问题）
+          const pre = groupBBox(s2, s.label)
+          s2 = fitGroupToBox(s2, s.label, { cx: s.cx, cy: s.cy, w: s.w, h: s.h })
+          const post = groupBBox(s2, s.label)
+          const overflow = post.w > s.w + 8 || post.h > s.h + 8
+          cb.onLog(
+            `▸ ${s.label}: 画${ops.length}笔(预算${budget}) 框${Math.round(s.w)}×${Math.round(s.h)}` +
+            ` → 原bbox ${Math.round(pre.w)}×${Math.round(pre.h)}` +
+            ` → 贴框后 ${Math.round(post.w)}×${Math.round(post.h)}` +
+            (overflow ? ' ⚠超框' : ''),
+          )
+
+          scene = s2
+          painted++
+          if (!firstPaint) { firstPaint = true; cb.onFirstPaint?.() }
+          cb.onScene(scene)
+        })
+        return chain
+      })
+      .catch(() => {
+        cb.onLog(`「${s.label}」流式异常，跳过`)
+      })
+    return request
   })
 
-  // Step 5: 串行按序应用（保证 ID 自增不冲突，渐进 onScene）
-  for (const p of pending) {
-    const { s, ops } = await p
-    if (ops.length === 0) {
-      cb.onLog(`「${s.label}」未画成，跳过`)
-      continue
-    }
-    const before = scene
-    const ex = executeTransaction(scene, ops)
-    if (ex.state === before) {
-      cb.onLog(`「${s.label}」未画成，跳过`)
-      continue
-    }
-    let s2 = applyAutoGroup(before, ex.state, s.label)
-
-    // fit 前后记录 bbox 日志（诊断"矮人偏大/框太小"等问题）
-    const pre = groupBBox(s2, s.label)
-    s2 = fitGroupToBox(s2, s.label, { cx: s.cx, cy: s.cy, w: s.w, h: s.h })
-    const post = groupBBox(s2, s.label)
-    const overflow = post.w > s.w + 8 || post.h > s.h + 8
-    const budget = Math.max(10, Math.min(22, Math.round(s.w * s.h / 4000)))
-    cb.onLog(
-      `▸ ${s.label}: 画${ops.length}笔(预算${budget}) 框${Math.round(s.w)}×${Math.round(s.h)}` +
-      ` → 原bbox ${Math.round(pre.w)}×${Math.round(pre.h)}` +
-      ` → 贴框后 ${Math.round(post.w)}×${Math.round(post.h)}` +
-      (overflow ? ' ⚠超框' : ''),
-    )
-
-    scene = s2
-    painted++
-    if (!firstPaint) { firstPaint = true; cb.onFirstPaint?.() }
-    cb.onScene(scene)
-  }
+  // 等所有 LLM 请求发出并各自触发了 chain 排队（不等 chain 执行完）
+  await Promise.all(tasks)
+  // 等 chain 中最后一个上屏动作完成（串行 apply 全部结束）
+  await chain
 
   // Step 6: 全部失败时回退
   if (painted === 0) {
