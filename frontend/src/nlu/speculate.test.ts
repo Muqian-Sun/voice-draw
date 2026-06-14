@@ -12,13 +12,14 @@ describe('normalizeUtterance', () => {
 })
 
 describe('SpeculativeParser', () => {
-  it('partial 预解析 + final 归一化命中 → 复用缓存（含纠错与规则结果）', () => {
+  it('partial 预解析 + final 归一化命中 → 复用缓存（含纠错与系统指令规则结果）', () => {
+    // 绘图已不走规则层（升 LLM）；系统指令仍本地命中，投机复用对其有效
     const sp = new SpeculativeParser()
-    sp.onPartial('花一个红色的园', {})
-    const r = sp.takeForFinal('花一个红色的园。')
+    sp.onPartial('车销', {})
+    const r = sp.takeForFinal('车销。')
     expect(r).not.toBeNull()
-    expect(r!.corrected).toBe('画一个红色的圆')
-    expect(r!.rule?.template).toBe('T1')
+    expect(r!.corrected).toBe('撤销')
+    expect(r!.rule?.template).toBe('T6')
     expect(sp.stats).toEqual({ speculated: 1, hits: 1, misses: 0 })
   })
 
