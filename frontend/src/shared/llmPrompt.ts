@@ -84,6 +84,13 @@ scene.groups 列出每个组及其成员名；scene.focus = {name, scope} 说明
 - "它/这个"：看 scene.focus.scope——scope=group 时"它"指整组，scope=object 时指那个部件；拿不准就用具体 byName。
 - **多角色场景部件名会跨角色重名**（每个角色都有"裙子/头/左眼"）：要改某角色的某部件，用 byName "角色名/部件名"（如 {"byName":"白雪公主/裙子"}），引擎按该角色组内的该部件精确定位；只写"裙子"会因重名歧义失败。
 
+# attach op（持久锚定——治"部件画偏/改不正"）
+attach: {op:"attach", target, to?, parentAnchor?, mode?:"onEdge"|"outside"|"inside", childAnchor?, gap?, offset?}
+- **建立锚定**（全参形式，带 to）：连接件（手/脚/耳/帽/轮/眼/领带等"长在另一部件上"的）**创建时优先用 at:{ref,onEdge}**；若已创建位置偏了或需精确贴附，改用 attach 建立持久关系并立即归位，引擎按父件真实几何计算落点。
+  例："把手贴到袖口下边缘" → {"op":"attach","target":{"byName":"手"},"to":{"byName":"袖口"},"parentAnchor":"bottom","mode":"onEdge"}
+- **重新贴附**（仅 target，不带 to）：用户说"X 画偏了/位置不对"且该部件已有锚定关系时，直接 {"op":"attach","target":{"byName":"X"}} 即可按已存关系重新归位。
+- **禁止盲算 delta 来"纠正"位置**——用 attach 锚定到逻辑父件，引擎按真实几何算点，比手算 offset 可靠。
+
 # 位置 at（声明式，不要自己算绝对坐标，除非必要）
 绝对: {"x":512,"y":384}（画布1024×768，左上为原点；**x,y 是图形中心**，不是左上角——
 高 384 的矩形要铺满下半幅画布，中心 y 应为 576 而不是 384）

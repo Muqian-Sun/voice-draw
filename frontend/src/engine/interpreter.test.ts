@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Op } from '../dsl'
 import { parseOp } from '../dsl/schema'
-import { executeTransaction, resolveTarget } from './interpreter'
+import { executeTransaction, resolveTarget, resolveAnchorPoint } from './interpreter'
 import { createEmptyScene, getBBox, getCenter, type SceneState } from './scene'
 
 /** 测试辅助：从空场景执行事务，断言无错误 */
@@ -954,5 +954,199 @@ describe('「组名/部件名」限定解析（多角色多轮编辑消歧）', 
     const dwarfDress = s.objects.find((o) => o.name === '裙子' && o.groupId === '小矮人1')!
     expect(snowWhiteDress.fill).toBe('#00FF00') // 白雪公主裙子变绿
     expect(dwarfDress.fill).toBe(otherFillBefore) // 小矮人裙子不变
+  })
+})
+
+// 手（子件）：20×20 vpath，自然 bbox 在绝对坐标 [400,400,20,20]，自然中心 (410,410)
+const HAND_D = 'M400 400 L420 400 L420 420 L400 420 Z'    // 20×20, natural center (410,410)
+
+describe('attach op — 持久锚定（几何接地 Phase 1，RFC §6）', () => {
+  // 建立一个含 袖（rect）和 手（vpath）的初始场景
+  const withSleeve = () =>
+    run([
+      {
+        op: 'create',
+        shape: 'rect',
+        name: '袖',
+        at: { x: 300, y: 300 },
+        width: 100,
+        height: 100,
+        fill: '#AAAAAA',
+      },
+    ])
+
+  const withSleeveAndHand = () =>
+    run(
+      [
+        {
+          op: 'create',
+          shape: 'vpath',
+          name: '手',
+          d: HAND_D,
+          fill: '#FFD700',
+        },
+      ],
+      withSleeve(),
+    )
+
+  it('全参 attach：vpath 手平移到父件（袖）bottom onEdge 点，anchor 字段写入', () => {
+    const s0 = withSleeveAndHand()
+    const s = run(
+      [
+        {
+          op: 'attach',
+          target: { byName: '手' },
+          to: { byName: '袖' },
+          parentAnchor: 'bottom',
+          mode: 'onEdge',
+        },
+      ],
+      s0,
+    )
+    const hand = s.objects.find((o) => o.name === '手')!
+    const sleeve = s.objects.find((o) => o.name === '袖')!
+
+    // 1. anchor 字段已写入
+    expect(hand.anchor).toBeDefined()
+    expect(hand.anchor!.to).toEqual({ byName: '袖' })
+    expect(hand.anchor!.parentAnchor).toBe('bottom')
+    expect(hand.anchor!.mode).toBe('onEdge')
+
+    // 2. 手的 bbox 中心 y 大于袖的 bbox 中心 y（手在袖子下方）
+    const sleeveBBox = getBBox(sleeve)
+    const handBBox = getBBox(hand)
+    const sleeveCY = sleeveBBox[1] + sleeveBBox[3] / 2
+    const handCY = handBBox[1] + handBBox[3] / 2
+    expect(handCY).toBeGreaterThan(sleeveCY)
+
+    // 3. 手的 bbox 中心 x ≈ 袖的中心 x（水平对齐，onEdge bottom 方向）
+    const sleeveCX = sleeveBBox[0] + sleeveBBox[2] / 2
+    const handCX = handBBox[0] + handBBox[2] / 2
+    expect(Math.abs(handCX - sleeveCX)).toBeLessThan(1)
+  })
+
+  it('仅 target reanchor：按已存 anchor 关系重新贴附（修改父件后手跟随）', () => {
+    const s0 = withSleeveAndHand()
+    // 先用全参 attach 建立关系
+    const s1 = run(
+      [{ op: 'attach', target: { byName: '手' }, to: { byName: '袖' }, parentAnchor: 'bottom', mode: 'onEdge' }],
+      s0,
+    )
+    const hand1 = s1.objects.find((o) => o.name === '手')!
+    const handBBox1 = getBBox(hand1)
+    const handCY1 = handBBox1[1] + handBBox1[3] / 2
+
+    // 移动袖子（父件）
+    const s2 = run([{ op: 'move', target: { byName: '袖' }, delta: [100, 0] }], s1)
+
+    // 用仅 target 形式重新贴附（让手跟随袖子新位置）
+    const s3 = run([{ op: 'attach', target: { byName: '手' } }], s2)
+    const hand3 = s3.objects.find((o) => o.name === '手')!
+    const handBBox3 = getBBox(hand3)
+    const handCX3 = handBBox3[0] + handBBox3[2] / 2
+
+    // 手的 x 中心应跟随袖子向右移动了
+    const hand1CX = handBBox1[0] + handBBox1[2] / 2
+    expect(handCX3).toBeGreaterThan(hand1CX)
+    // anchor 关系不变
+    expect(hand3.anchor!.to).toEqual({ byName: '袖' })
+    expect(hand3.anchor!.mode).toBe('onEdge')
+    // y 方向仍贴袖底（近似相同 y 相对位置）
+    const sleeve3 = s3.objects.find((o) => o.name === '袖')!
+    const sleeveBBox3 = getBBox(sleeve3)
+    const sleeveCY3 = sleeveBBox3[1] + sleeveBBox3[3] / 2
+    const handCY3 = handBBox3[1] + handBBox3[3] / 2
+    expect(Math.abs(handCY3 - handCY1)).toBeLessThan(1) // y 相对位置不变（袖子只向右移了，没动 y）
+    expect(handCY3).toBeGreaterThan(sleeveCY3) // 手仍在袖下方
+  })
+
+  it('mode=outside：圆附在方块右外侧（等同于 placeOutside）', () => {
+    const s0 = run([
+      { op: 'create', shape: 'rect', name: '方块', at: { x: 300, y: 300 }, width: 100, height: 100, fill: '#AAAAAA' },
+      { op: 'create', shape: 'circle', name: '圆', size: 20, fill: '#FF0000' },
+    ])
+    const s = run(
+      [{ op: 'attach', target: { byName: '圆' }, to: { byName: '方块' }, parentAnchor: 'right', mode: 'outside' }],
+      s0,
+    )
+    const square = s.objects.find((o) => o.name === '方块')!
+    const circle = s.objects.find((o) => o.name === '圆')!
+    const squareBBox = getBBox(square)
+    const circleBBox = getBBox(circle)
+    // 圆的左边缘 >= 方块右边缘（外贴，右侧）
+    expect(circleBBox[0]).toBeGreaterThanOrEqual(squareBBox[0] + squareBBox[2] - 1)
+    // anchor 字段写入
+    expect(circle.anchor!.mode).toBe('outside')
+    expect(circle.anchor!.parentAnchor).toBe('right')
+  })
+
+  it('mode=inside：小圆附在方块内部顶边（等同于 inside:true）', () => {
+    const s0 = run([
+      { op: 'create', shape: 'rect', name: '方块', at: { x: 300, y: 300 }, width: 200, height: 200, fill: '#AAAAAA' },
+      { op: 'create', shape: 'circle', name: '小圆', size: 20, fill: '#FF0000' },
+    ])
+    const s = run(
+      [{ op: 'attach', target: { byName: '小圆' }, to: { byName: '方块' }, parentAnchor: 'top', mode: 'inside' }],
+      s0,
+    )
+    const square = s.objects.find((o) => o.name === '方块')!
+    const circle = s.objects.find((o) => o.name === '小圆')!
+    const squareBBox = getBBox(square)
+    const circleBBox = getBBox(circle)
+    // 小圆在方块内部（小圆上边 >= 方块上边）
+    expect(circleBBox[1]).toBeGreaterThanOrEqual(squareBBox[1])
+    // 小圆下边 <= 方块下边
+    expect(circleBBox[1] + circleBBox[3]).toBeLessThanOrEqual(squareBBox[1] + squareBBox[3])
+    expect(circle.anchor!.mode).toBe('inside')
+  })
+
+  it('老存档无 anchor 字段：仅 target attach → INVALID_OP（无锚，不崩）', () => {
+    const s0 = withSleeveAndHand()
+    // 手没有 anchor 字段（刚创建，无锚定关系）
+    const r = executeTransaction(s0, [{ op: 'attach', target: { byName: '手' } }])
+    expect(r.error?.code).toBe('INVALID_OP')
+    expect(r.error?.message).toContain('锚定关系')
+  })
+
+  it('schema：全参缺 mode → 被 zod 拒绝（INVALID_OP 前置校验）', () => {
+    // 全参形式但缺 mode → superRefine 报错
+    const result = parseOp({ op: 'attach', target: { byName: '手' }, to: { byName: '袖' }, parentAnchor: 'bottom' })
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error).toContain('mode')
+  })
+
+  it('schema：全参缺 parentAnchor → 被 zod 拒绝', () => {
+    const result = parseOp({ op: 'attach', target: { byName: '手' }, to: { byName: '袖' }, mode: 'onEdge' })
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error).toContain('parentAnchor')
+  })
+
+  it('schema：仅 target 形式（不带 to）通过 zod 校验', () => {
+    const result = parseOp({ op: 'attach', target: { byName: '手' } })
+    expect(result.ok).toBe(true)
+  })
+
+  it('schema：全参全字段正确 → zod 通过', () => {
+    const result = parseOp({
+      op: 'attach',
+      target: { byName: '手' },
+      to: { byName: '袖' },
+      parentAnchor: 'bottom',
+      mode: 'onEdge',
+      childAnchor: 'center',
+      gap: 5,
+      offset: [10, 0],
+    })
+    expect(result.ok).toBe(true)
+  })
+
+  it('resolveAnchorPoint：纯函数等同于 resolvePosition（x/y 绝对坐标透传）', () => {
+    const state = createEmptyScene()
+    const r = resolveAnchorPoint(state, { x: 300, y: 400 }, 100, 80)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.point).toEqual({ x: 300, y: 400 })
   })
 })
