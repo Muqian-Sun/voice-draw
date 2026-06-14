@@ -144,6 +144,141 @@ export function objectToStrokes(o: SceneObject): Stroke[] {
   }
 }
 
+/** SVG path d（M/L/C/Q/Z 绝对坐标）→ 子路径折线 + 是否闭合(Z)。贝塞尔按定步采样；
+ *  支持隐式重复命令（M 之后续坐标按 L）；非法 token 跳过、NaN 点滤除，避免死循环/坏点。 */
+export function flattenPathD(d: string): Array<{ pts: Pt[]; closed: boolean }> {
+  const out: Array<{ pts: Pt[]; closed: boolean }> = []
+  const toks = d.match(/[MLCQZmlcqz]|-?\d*\.?\d+(?:e-?\d+)?/g) ?? []
+  let i = 0
+  let cur: Pt[] = []
+  let x = 0
+  let y = 0
+  let sx = 0
+  let sy = 0
+  let cmd = ''
+  const num = () => parseFloat(toks[i++])
+  const cubic = (x1: number, y1: number, x2: number, y2: number, x3: number, y3: number) => {
+    for (let k = 1; k <= 16; k++) {
+      const t = k / 16
+      const m = 1 - t
+      cur.push([
+        m * m * m * x + 3 * m * m * t * x1 + 3 * m * t * t * x2 + t * t * t * x3,
+        m * m * m * y + 3 * m * m * t * y1 + 3 * m * t * t * y2 + t * t * t * y3,
+      ])
+    }
+    x = x3
+    y = y3
+  }
+  const quad = (x1: number, y1: number, x2: number, y2: number) => {
+    for (let k = 1; k <= 12; k++) {
+      const t = k / 12
+      const m = 1 - t
+      cur.push([m * m * x + 2 * m * t * x1 + t * t * x2, m * m * y + 2 * m * t * y1 + t * t * y2])
+    }
+    x = x2
+    y = y2
+  }
+  const flush = (closed: boolean) => {
+    const pts = cur.filter((p) => Number.isFinite(p[0]) && Number.isFinite(p[1]))
+    if (pts.length >= 2) out.push({ pts, closed })
+    cur = []
+  }
+  while (i < toks.length) {
+    if (/[MLCQZmlcqz]/.test(toks[i])) {
+      cmd = toks[i]
+      i++
+    }
+    const c = cmd.toUpperCase()
+    if (c === 'M') {
+      flush(false)
+      x = num()
+      y = num()
+      sx = x
+      sy = y
+      cur = [[x, y]]
+      cmd = 'L' // SVG：M 之后的续坐标组按 L 处理
+    } else if (c === 'L') {
+      x = num()
+      y = num()
+      cur.push([x, y])
+    } else if (c === 'C') {
+      cubic(num(), num(), num(), num(), num(), num())
+    } else if (c === 'Q') {
+      quad(num(), num(), num(), num())
+    } else if (c === 'Z') {
+      cur.push([sx, sy])
+      flush(true)
+      x = sx
+      y = sy
+    } else {
+      i++ // 无法识别（如开头杂散数字）→ 跳过，防死循环
+    }
+  }
+  flush(false)
+  return out
+}
+
+/**
+ * v2.0 vpath 逐笔手绘：把 path d 采样成轮廓折线笔触，供动画"描轮廓 + 填色"看绘制过程。
+ * 落定后渲染器改走清晰 Path2D（drawVPath）出最终质感（渐变/投影），故此处仅为过程动画近似：
+ * 闭合(Z)子路径作闭合笔（描周界 + 行扫填色），开放子路径作变宽墨带（嘴/胡须）。
+ * 应用 (x,y) 平移与 rotation（绕 d 包围盒中心，与 drawVPath 对齐），编辑后的 vpath 轨迹也对位。
+ */
+export function vpathToStrokes(o: SceneObject): Stroke[] {
+  if (!o.d) return []
+  const subs = flattenPathD(o.d)
+  if (subs.length === 0) return []
+  const deg = o.rotation || 0
+  let cx = 0
+  let cy = 0
+  if (deg) {
+    let minX = Infinity
+    let minY = Infinity
+    let maxX = -Infinity
+    let maxY = -Infinity
+    for (const s of subs)
+      for (const [px, py] of s.pts) {
+        if (px < minX) minX = px
+        if (px > maxX) maxX = px
+        if (py < minY) minY = py
+        if (py > maxY) maxY = py
+      }
+    cx = (minX + maxX) / 2
+    cy = (minY + maxY) / 2
+  }
+  const tx = o.x || 0
+  const ty = o.y || 0
+  const xform = ([px, py]: Pt): Pt => {
+    let qx = px
+    let qy = py
+    if (deg) {
+      const r = (deg * Math.PI) / 180
+      const co = Math.cos(r)
+      const si = Math.sin(r)
+      const dx = px - cx
+      const dy = py - cy
+      qx = cx + dx * co - dy * si
+      qy = cy + dx * si + dy * co
+    }
+    return [qx + tx, qy + ty]
+  }
+  const fillColor = o.gradient?.from ?? (o.fill && o.fill !== 'none' ? o.fill : undefined)
+  const color = o.stroke ?? fillColor ?? INK
+  const width = o.strokeWidth ?? (o.stroke ? 3 : 6)
+  return subs.map(({ pts, closed }) => {
+    const fillable = closed && pts.length >= 3 && fillColor !== undefined
+    return {
+      pts: pts.map(xform),
+      closed,
+      smooth: false, // d 已是采样曲线，勿再 CR 平滑
+      color,
+      width,
+      taper: !closed,
+      ...(fillable ? { fill: fillColor } : {}),
+    }
+  })
+}
+
 /** 整个场景 → 笔触序列（按 z 升序：背景先画、前景后画，符合人作画顺序） */
 export function sceneToStrokes(scene: SceneState): Stroke[] {
   return [...scene.objects]
