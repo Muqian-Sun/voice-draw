@@ -2,13 +2,15 @@
  * 多主体 plan 编排器（按角色拆子计划设计 Phase 1 PR-2）
  *
  * orchestrateSubplans：
- *   多主体话术 → 背景瞬时直接画（无需 LLM）→ planLayout 布局 → 框去重叠 →
- *   并发触发所有角色 LLM 调用（非流式）→ 串行按序应用（执行 + 编组 + fit）→ 返回最终场景。
+ *   多主体话术 → planLayout 布局 → 框去重叠 → 背景（planLayout 后画，z 垫底）→
+ *   并发触发所有角色 LLM 调用（非流式，按框面积给笔数预算）→
+ *   串行按序应用（执行 + 编组 + fit）→ 首帧背景+首主体同时出 → 返回最终场景。
  *
  * 单主体 / planner 失败 / 全部失败 → ok:false fallback，调用方继续走普通流式 plan。
  *
  * 性能优化：串行 N×~37s ≈ 数分钟 → 并发取 LLM（非流式）串行应用 ≈ 单次 ~40s；
  *   ID 生成走串行 apply，不冲突。
+ * 背景 z 垫底：背景在 baseScene 之上创建（maxZ+1/+2），后续主体对象从更高 z 开始，天然在背景之上。
  */
 import { applyAutoGroup } from '../engine/history'
 import { executeTransaction } from '../engine/interpreter'
@@ -219,21 +221,7 @@ export async function orchestrateSubplans(
   let painted = 0
   let firstPaint = false
 
-  // Step 1: 背景瞬时直接画（用话术关键词，不走 LLM，在 planLayout 前先出图）
-  // 这样首帧背景出现在 planLayout 的 ~5s 等待之前。
-  const bgOps = backgroundOps(utterance)
-  if (bgOps.length > 0) {
-    const before = scene
-    const ex = executeTransaction(scene, bgOps)
-    if (ex.state !== before) {
-      scene = applyAutoGroup(before, ex.state, '背景')
-      if (!firstPaint) { firstPaint = true; cb.onFirstPaint?.() }
-      cb.onScene(scene)
-      cb.onLog('▸ 背景已铺（天空/地面）')
-    }
-  }
-
-  // Step 2: 布局规划（与背景绘制无关，串行等待规划结果）
+  // Step 1: 布局规划（先等规划结果，背景跟首个主体一起出，不单独出现空背景帧）
   cb.onLog('正在规划构图…')
   const lay = await planLayout(utterance, { ...ctx, scene: baseScene })
   if (!lay.ok || lay.layout.subjects.length <= 1) {
@@ -245,14 +233,35 @@ export async function orchestrateSubplans(
   const { style, subjects } = lay.layout
   cb.onLog(`布局：${subjects.length} 个主体，去重叠后并行请求 LLM…`)
 
-  // Step 3: 框去重叠（AABB 迭代推开，治多矮人重叠）
+  // Step 2: 框去重叠（AABB 迭代推开，治多矮人重叠）
   deoverlapBoxes(subjects)
 
+  // Step 3: 背景在 planLayout 之后画（z 垫底）。
+  // 背景先于所有主体创建→背景对象 z = baseScene.maxZ+{1,2}；
+  // 后续主体对象 z 从 maxZ+3 开始递增，天然高于背景——无需手动调 z。
+  // 不单独 onScene/onFirstPaint：用户看不到"只有背景的空帧"，
+  // 首帧渲染在第一个主体应用完后触发（背景+主体同时出现）。
+  const bgOps = backgroundOps(utterance)
+  if (bgOps.length > 0) {
+    const before = scene
+    const ex = executeTransaction(scene, bgOps)
+    if (ex.state !== before) {
+      scene = applyAutoGroup(before, ex.state, '背景')
+      cb.onLog('▸ 背景已铺（天空/地面），等首个主体一起出图…')
+      // 注意：此处不调 onScene / onFirstPaint，背景不独立出帧
+    }
+  }
+
   // Step 4: 并发触发所有角色的 LLM 调用（非流式 parseWithLlm）
-  // 以 planLayout 后的 scene（含背景）为共享上下文基线；所有角色同时请求，
+  // 以 planLayout + 背景应用后的 scene 为共享上下文基线；所有角色同时请求，
   // LLM 耗时从 N×串行 变成 max(各角色) 并行。
   const bgScene = scene  // 背景已应用后的基准，供所有子计划共享读取
   const pending = subjects.map(async (s) => {
+    // 按目标框面积给笔数预算：小框（矮人等）少画快出，大框（主角）多画精细。
+    // 线性映射：budget = clamp(round(w*h / 4000), 10, 22)
+    // 约 200×200=40000 → 10笔；约 300×300=90000 → 22笔（取上限）。
+    const budget = Math.max(10, Math.min(22, Math.round(s.w * s.h / 4000)))
+
     // 子计划话术：只给编排框架（单主体、画大、画全、居中供缩放贴框）；
     // 外观/结构/比例/部件细节全交给 SYSTEM_PROMPT + LLM 自身知识，不在此写死。
     const prompt =
@@ -260,7 +269,7 @@ export async function orchestrateSubplans(
       `把 ${s.label} 的所有部件画完整、细节到位，别省略或截断成残缺轮廓；` +
       `整体画大、居中于画布中心 (512,384)（不用管它最终摆在哪、多大，我会自动缩放摆放进画面）` +
       (style !== undefined ? `，画风：${style}` : '') +
-      `。`
+      `。用约 ${budget} 个部件画到位、抓住${s.label}的特征即可、不要堆冗余细节（画得越精简越快，但部件要完整）。`
     try {
       const res = await parseWithLlm(prompt, 'plan', { ...ctx, scene: bgScene })
       return { s, ops: res.ok ? res.result.ops : [] as Op[] }
@@ -289,8 +298,9 @@ export async function orchestrateSubplans(
     s2 = fitGroupToBox(s2, s.label, { cx: s.cx, cy: s.cy, w: s.w, h: s.h })
     const post = groupBBox(s2, s.label)
     const overflow = post.w > s.w + 8 || post.h > s.h + 8
+    const budget = Math.max(10, Math.min(22, Math.round(s.w * s.h / 4000)))
     cb.onLog(
-      `▸ ${s.label}: 画${ops.length}笔 框${Math.round(s.w)}×${Math.round(s.h)}` +
+      `▸ ${s.label}: 画${ops.length}笔(预算${budget}) 框${Math.round(s.w)}×${Math.round(s.h)}` +
       ` → 原bbox ${Math.round(pre.w)}×${Math.round(pre.h)}` +
       ` → 贴框后 ${Math.round(post.w)}×${Math.round(post.h)}` +
       (overflow ? ' ⚠超框' : ''),
