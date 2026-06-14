@@ -171,9 +171,9 @@ export function validateLlmOutput(content: string, mode: 'parse' | 'plan'): Vali
     ops.push(r.data)
   }
 
-  // 业务校验 3：plan 模式 create 必须带 desc，总 Op 数 ≤ 28（v1.6 放宽：鼓励更丰富构图）
+  // 业务校验 3：plan 模式 create 必须带 desc，总 Op 数 ≤ 50（放宽：多主体场景按角色给足 op，避免各角色残缺）
   if (mode === 'plan') {
-    if (ops.length > 28) return { ok: false, error: `plan 模式 Op 总数 ${ops.length} 超过 28` }
+    if (ops.length > 50) return { ok: false, error: `plan 模式 Op 总数 ${ops.length} 超过 50` }
     const missing = ops.findIndex((o) => o.op === 'create' && o.desc === undefined)
     if (missing >= 0) return { ok: false, error: `plan 模式 ops[${missing}] 缺少 desc（进度播报用）` }
   }

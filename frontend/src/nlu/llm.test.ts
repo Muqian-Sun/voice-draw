@@ -66,7 +66,7 @@ describe('validateLlmOutput（协议 §2.3 业务校验）', () => {
     if (!r.ok) expect(r.error).toContain('clear')
   })
 
-  it('plan 模式 create 缺 desc / 超 20 个 Op → 失败', () => {
+  it('plan 模式 create 缺 desc / 超 50 个 Op → 失败；≤50 通过', () => {
     const noDesc = JSON.stringify({
       intent: 'ops',
       confidence: 0.9,
@@ -77,10 +77,18 @@ describe('validateLlmOutput（协议 §2.3 业务校验）', () => {
     const tooMany = JSON.stringify({
       intent: 'ops',
       confidence: 0.9,
-      ops: Array.from({ length: 29 }, () => ({ op: 'create', shape: 'circle', desc: 'd' })),
+      ops: Array.from({ length: 51 }, () => ({ op: 'create', shape: 'circle', desc: 'd' })),
       say: 'x',
     })
     expect(validateLlmOutput(tooMany, 'plan').ok).toBe(false)
+    // 多主体放宽：50 个 op 合法（白雪公主+7 矮人需按角色给足）
+    const okMany = JSON.stringify({
+      intent: 'ops',
+      confidence: 0.9,
+      ops: Array.from({ length: 50 }, () => ({ op: 'create', shape: 'circle', desc: 'd' })),
+      say: 'x',
+    })
+    expect(validateLlmOutput(okMany, 'plan').ok).toBe(true)
   })
 
   it('confidence <0.6 的 ops → 转 clarify（§2.3 第 4 条）', () => {
