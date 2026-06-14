@@ -2,8 +2,8 @@
  * 多主体 plan 编排器（按角色拆子计划设计 Phase 1 PR-2）
  *
  * orchestrateSubplans：
- *   多主体话术 → planLayout 布局 → 背景 + 逐角色子计划（各自 parseWithLlm plan 模式 +
- *   forwardRetry runner 渐进应用） → 逐角色 applyAutoGroup 编组 → 返回最终场景。
+ *   多主体话术 → planLayout 布局 → 背景 + 逐角色子计划（各自 parseWithLlmStream plan 模式 +
+ *   forwardRetry runner 逐 op 渐进应用） → 逐角色 applyAutoGroup 编组 → 返回最终场景。
  *
  * 单主体 / planner 失败 / 全部失败 → ok:false fallback，调用方继续走普通流式 plan。
  */
@@ -11,7 +11,7 @@ import { applyAutoGroup } from '../engine/history'
 import { createForwardTolerantRunner } from '../engine/forwardRetry'
 import type { SceneState } from '../engine/scene'
 import type { Op } from '../dsl'
-import { type LlmCallContext, parseWithLlm } from './llm'
+import { type LlmCallContext, parseWithLlmStream } from './llm'
 import { planLayout } from './planner'
 
 export function looksMultiSubject(u: string): boolean {
@@ -39,6 +39,7 @@ export async function orchestrateSubplans(
   cb: OrchestrateCallbacks,
 ): Promise<OrchestrateResult> {
   // Step 1: 布局规划
+  cb.onLog('正在规划构图…')
   const lay = await planLayout(utterance, { ...ctx, scene: baseScene })
   if (!lay.ok || lay.layout.subjects.length <= 1) {
     cb.onLog(lay.ok ? '布局主体数 ≤1 → 退回普通 plan' : `planLayout 失败：${lay.error}`)
@@ -53,19 +54,8 @@ export async function orchestrateSubplans(
   let painted = 0
   let firstPaint = false
 
-  // 内部 draw 函数（串行调用，共享闭包 scene）
+  // 内部 draw 函数（串行调用，共享闭包 scene）——流式：onOp 每到一个 op 就 push 进 runner（逐 op 渐进出图）
   const draw = async (prompt: string, label: string): Promise<void> => {
-    let llm: Awaited<ReturnType<typeof parseWithLlm>>
-    try {
-      llm = await parseWithLlm(prompt, 'plan', { ...ctx, scene })
-    } catch (e) {
-      cb.onLog(`「${label}」失败跳过`)
-      return
-    }
-    if (!llm.ok || llm.result.intent !== 'ops' || llm.result.ops.length === 0) {
-      cb.onLog(`「${label}」未画成，跳过`)
-      return
-    }
     const before = scene
     const runner = createForwardTolerantRunner(scene, (op: Op, state: SceneState) => {
       painted++
@@ -77,8 +67,14 @@ export async function orchestrateSubplans(
       cb.onScene(state)
       if (op.op === 'create' && op.desc !== undefined) cb.onLog(`▸ ${op.desc}`)
     })
-    for (const op of llm.result.ops) runner.push(op)
+    try {
+      // 流式：onOp 每到一个 op 就 push 进 runner（逐 op 渐进出图）。即便终验未过，已 push 的 op 也保留。
+      await parseWithLlmStream(prompt, 'plan', { ...ctx, scene: before }, (op) => runner.push(op))
+    } catch (e) {
+      cb.onLog(`「${label}」流式异常，保留已画部分`)
+    }
     scene = runner.finish().state
+    if (scene === before) { cb.onLog(`「${label}」未画成，跳过`); return }
     scene = applyAutoGroup(before, scene, label)
     cb.onScene(scene)
   }
