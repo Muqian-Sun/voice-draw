@@ -66,11 +66,12 @@ function planResp(label: string) {
   })
 }
 
-/** 构造 mock fetchFn：按 body.mode/stream 返回不同内容
+/** 构造 mock fetchFn：按 body.mode 返回不同内容
  *  - layout（非流式）：返回 { content: <布局JSON字符串> }（callBackend 格式）
- *  - plan（stream:true）：返回裸 LLM JSON 字符串作为 body（parseWithLlmStream 直接 getReader 读取）
+ *  - plan（非流式，parseWithLlm）：返回 { content: <plan JSON字符串> }（callBackend 格式）
  *
  *  注意：背景改为瞬时直接画（不走 LLM），故 plan 请求只有两个角色各自的（layout 1 次 + plan 2 次）。
+ *  注意：新编排器用 parseWithLlm（非流式），不再发 stream:true 的请求。
  */
 function makeFetchFn() {
   const callCount = { layout: 0, plan: 0 }
@@ -83,10 +84,13 @@ function makeFetchFn() {
         headers: { 'Content-Type': 'application/json' },
       })
     }
-    // plan 模式（stream:true）：裸 LLM JSON 作为 body，parseWithLlmStream 经 res.body.getReader() 读取
+    // plan 模式（非流式，parseWithLlm）：返回 { content: <plan JSON字符串> }（callBackend 格式）
     callCount.plan++
     const label = (body.utterance ?? '').includes('白雪公主') ? '白雪公主' : '小矮人'
-    return new Response(planResp(label), { status: 200 })
+    return new Response(JSON.stringify({ content: planResp(label) }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
   }) as unknown as typeof fetch
   return { fn, callCount }
 }
