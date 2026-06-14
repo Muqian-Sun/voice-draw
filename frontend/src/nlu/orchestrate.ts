@@ -14,6 +14,44 @@ import type { Op } from '../dsl'
 import { type LlmCallContext, parseWithLlmStream } from './llm'
 import { planLayout } from './planner'
 
+/**
+ * 按描述关键词选天/地配色，返回 2 个铺满画布的渐变 rect create op。
+ * 画布逻辑尺寸 1024x768；天空上半（y=0~460）中心 y=230，地面下半（y=460~768）中心 y=614。
+ * 不走 LLM，瞬时直接应用，让首个角色紧跟 planner 就开始绘制。
+ */
+function backgroundOps(desc: string): Op[] {
+  const d = desc || ''
+  let sky: [string, string] = ['#CDEBFF', '#F7FCFF']
+  let ground: [string, string] = ['#9BD46E', '#5BA83F']
+  if (/海|水|湖|河|洋/.test(d)) ground = ['#5BB5E8', '#2A7FB8']
+  else if (/夜|星|晚|月/.test(d)) { sky = ['#1B2A4A', '#3A4A6B']; ground = ['#243B55', '#1B2A4A'] }
+  else if (/雪|冬|冰/.test(d)) ground = ['#EAF4FB', '#CFE3F0']
+  else if (/沙漠|沙滩|沙/.test(d)) { sky = ['#FCE7B5', '#FFF6E0']; ground = ['#E8C07A', '#C99A4E'] }
+  else if (/室内|房间|屋里|客厅|卧室/.test(d)) { sky = ['#F3E9D8', '#FBF6EC']; ground = ['#D8C3A0', '#B89B72'] }
+  return [
+    {
+      op: 'create',
+      shape: 'rect',
+      name: '背景天空',
+      gradient: { from: sky[0], to: sky[1], angle: 90 },
+      at: { x: 512, y: 230 },
+      width: 1024,
+      height: 460,
+      desc: '画背景天空',
+    } as Op,
+    {
+      op: 'create',
+      shape: 'rect',
+      name: '背景地面',
+      gradient: { from: ground[0], to: ground[1], angle: 90 },
+      at: { x: 512, y: 614 },
+      width: 1024,
+      height: 308,
+      desc: '画背景地面',
+    } as Op,
+  ]
+}
+
 export function looksMultiSubject(u: string): boolean {
   if (/[、和跟]|还有|以及|一家|一群|全家|多个|几个|一堆/.test(u)) return true
   if (/(两|三|四|五|六|七|八|九|十|[2-9])\s*(个|只|位|名|条|头|匹|朵|棵|架|辆)/.test(u)) return true
@@ -79,12 +117,20 @@ export async function orchestrateSubplans(
     cb.onScene(scene)
   }
 
-  // Step 2: 背景
+  // Step 2: 背景瞬时直接画（不走 LLM 子计划）：渐变天地铺满，让首个角色紧跟 planner 就开始
   if (background !== undefined) {
-    await draw(
-      `画${background}作背景、用渐变铺满整个画布，不画任何主体`,
-      background,
-    )
+    const before = scene
+    const runner = createForwardTolerantRunner(scene, (op: Op, state: SceneState) => {
+      painted++
+      if (!firstPaint) { firstPaint = true; cb.onFirstPaint?.() }
+      scene = state
+      cb.onScene(state)
+      if (op.op === 'create' && op.desc !== undefined) cb.onLog(`▸ ${op.desc}`)
+    })
+    for (const op of backgroundOps(background)) runner.push(op)
+    scene = runner.finish().state
+    if (scene !== before) scene = applyAutoGroup(before, scene, '背景')
+    cb.onScene(scene)
   }
 
   // Step 3: 逐角色串行绘制
