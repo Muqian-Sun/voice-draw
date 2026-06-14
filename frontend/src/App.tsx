@@ -8,6 +8,7 @@ import { createForwardTolerantRunner } from './engine/forwardRetry'
 import { type SceneState } from './engine/scene'
 import { correctTranscript } from './nlu/correction'
 import { parseWithLlm, parseWithLlmStream } from './nlu/llm'
+import { orchestrateSubplans, looksMultiSubject } from './nlu/orchestrate'
 import { decideMode, extractPlanSubject, parseRule, type RuleContext } from './nlu/rules'
 import { SpeculativeParser } from './nlu/speculate'
 import { isConfirmYes } from './nlu/confirm'
@@ -369,6 +370,31 @@ export default function App() {
         llmBusyRef.current = true
         void (async () => {
           try {
+            // 子计划编排（多主体 plan）：planner 布局 → 逐角色子计划 → 一次提交
+            if (mode === 'plan' && looksMultiSubject(utterance)) {
+              const base0 = historyRef.current
+              const orch = await orchestrateSubplans(
+                utterance, base0.scene,
+                { scene: base0.scene, asrAlternatives: utterance !== trimmed ? [trimmed] : [], recent: recentRef.current, lastTransaction: lastTxRef.current },
+                {
+                  onScene: (s) => { historyRef.current = { ...historyRef.current, scene: s }; setHistory(historyRef.current) },
+                  onFirstPaint: () => voiceApiRef.current?.dispatch('PARSE_DONE'),
+                  onLog: (msg) => pushLog('info', msg),
+                },
+              )
+              if (orch.ok) {
+                advance(true)
+                const committed = commitIncremental(base0, orch.scene) // 一次快照；组已逐主体编好，不再 autoGroup
+                historyRef.current = committed
+                setHistory(committed)
+                say('画好啦')
+                recordSuccess(utterance, [])
+                suggestAfterPlan()
+                return
+              }
+              // orch fallback（planner 失败/单主体/全失败）→ 不 return，继续走下面普通流式 plan
+            }
+
             const llmCtx = {
               scene: historyRef.current.scene,
               asrAlternatives: utterance !== trimmed ? [trimmed] : [],

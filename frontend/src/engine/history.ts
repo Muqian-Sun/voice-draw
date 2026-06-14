@@ -109,7 +109,7 @@ export function executeWithHistory(h: HistoryState, ops: Op[], opts: ExecuteOpti
 }
 
 /** llm-plan 自动编组（§5.1）：base 之后新建的对象（createdSeq > base.seq）编为一组 */
-function applyAutoGroup(base: SceneState, scene: SceneState, autoGroupName: string): SceneState {
+export function applyAutoGroup(base: SceneState, scene: SceneState, autoGroupName: string): SceneState {
   const created = scene.objects.filter((o) => o.createdSeq > base.seq)
   if (created.length < 2) return scene
   const taken = new Set<string>(
