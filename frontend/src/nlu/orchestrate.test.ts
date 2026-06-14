@@ -49,11 +49,14 @@ function planResp(label: string) {
   })
 }
 
-/** 构造 mock fetchFn：按 body.mode 返回不同内容 */
+/** 构造 mock fetchFn：按 body.mode/stream 返回不同内容
+ *  - layout（非流式）：返回 { content: <布局JSON字符串> }（callBackend 格式）
+ *  - plan（stream:true）：返回裸 LLM JSON 字符串作为 body（parseWithLlmStream 直接 getReader 读取）
+ */
 function makeFetchFn() {
   const callCount = { layout: 0, plan: 0 }
   const fn = vi.fn(async (_url: string, init?: RequestInit): Promise<Response> => {
-    const body = JSON.parse(String(init?.body)) as { mode: string; utterance?: string }
+    const body = JSON.parse(String(init?.body)) as { mode: string; stream?: boolean; utterance?: string }
     if (body.mode === 'layout') {
       callCount.layout++
       return new Response(JSON.stringify({ content: LAYOUT_RESP }), {
@@ -61,13 +64,10 @@ function makeFetchFn() {
         headers: { 'Content-Type': 'application/json' },
       })
     }
-    // plan 模式：根据 utterance 里包含的主体名给对应 plan 响应
+    // plan 模式（stream:true）：裸 LLM JSON 作为 body，parseWithLlmStream 经 res.body.getReader() 读取
     callCount.plan++
     const label = (body.utterance ?? '').includes('白雪公主') ? '白雪公主' : '小矮人'
-    return new Response(JSON.stringify({ content: planResp(label) }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    })
+    return new Response(planResp(label), { status: 200 })
   }) as unknown as typeof fetch
   return { fn, callCount }
 }
