@@ -17,10 +17,10 @@ import { PLANNER_PROMPT, SYSTEM_PROMPT } from './prompt.generated.js'
 // 火山方舟 Coding Plan（用户决策，弃七牛）：/api/coding 为 Anthropic 协议，
 // /api/coding/v3 为 OpenAI 兼容协议——本服务用后者，复用 chat/completions + SSE delta
 const DEFAULT_BASE_URL = 'https://ark.cn-beijing.volces.com/api/coding/v3'
-// 统一单模型（用户决策）：doubao-seed-code-2.0 文本+视觉双修——实测 parse 2.7s/plan 5.8s
+// 统一单模型（用户决策）：doubao-seed-2.0-pro（doubao-seed-2-0-pro-260215）文本+视觉双修——实测 parse 2.7s/plan 5.8s
 // 不输 deepseek-v4-flash，且原生支持图像输入（自检无需切模型）；env 仍可分别覆盖
-const DEFAULT_MODEL = 'doubao-seed-code-2.0'
-const DEFAULT_VISION_MODEL = 'doubao-seed-code-2.0'
+const DEFAULT_MODEL = 'doubao-seed-2-0-pro-260215'
+const DEFAULT_VISION_MODEL = 'doubao-seed-2-0-pro-260215'
 
 // parse / plan / layout 均关思考以求出图速度（首 token 快）；plan 质量改由"画后多轮异步自检精修"兜底
 // layout 输出小（纯 JSON 布局），复用 parse 档超时
