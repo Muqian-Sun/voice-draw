@@ -47,7 +47,7 @@ style:  {op,target,fill?,gradient?,stroke?,strokeWidth?,opacity?,shadow?}
 move:   {op,target,to?|delta?[dx,dy]}        resize: {op,target,scale?|to?}
 rotate: {op,target,degrees}                  delete: {op,target}
 rename: {op,target,name}                     setText:{op,target,text}
-group:  {op,targets[],name?}                 zorder: {op,target,to:front|back|forward|backward|{above:目标}|{below:目标}}
+group:  {op,targets[],name?}                 zorder: {op,target,to:front|back|forward|backward|{above:{byName:"云"}}|{below:{byName:"云"}}}
 focus:  {op,target}
 mirror: {op,target,about:目标,axis?:vertical|horizontal,name?}  // 镜像复制出对称部件（轴=about中心）
 align:  {op,targets[],axis:x|y}              distribute:{op,targets[],axis:x|y}  // 对齐 / 等距分布

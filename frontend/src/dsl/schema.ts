@@ -282,6 +282,13 @@ const ungroupOpSchema = z
   })
   .strict()
 
+// zorder 相对目标容忍裸名：LLM 常写 {above:"头发"} 而非 {above:{byName:"头发"}}，
+// 旧 schema 直接判 to: Invalid input → 整批流式校验失败回退缓冲。裸串归一为 {byName}。
+const zorderRelTargetSchema = z.union([
+  z.string().min(1).transform((s) => ({ byName: s })),
+  targetSelectorSchema,
+])
+
 const zorderOpSchema = z
   .object({
     op: z.literal('zorder'),
@@ -290,8 +297,8 @@ const zorderOpSchema = z
     // v1.5：相对层级（"把太阳放到云后面"= {below:{byName:"云"}}）
     to: z.union([
       z.enum(['front', 'back', 'forward', 'backward']),
-      z.object({ above: targetSelectorSchema }).strict(),
-      z.object({ below: targetSelectorSchema }).strict(),
+      z.object({ above: zorderRelTargetSchema }).strict(),
+      z.object({ below: zorderRelTargetSchema }).strict(),
     ]),
   })
   .strict()

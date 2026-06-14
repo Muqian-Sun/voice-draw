@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseOp, parseOps, safeColor } from './schema'
+import { parseOp, parseOps, safeColor, type Op } from './schema'
 
 describe('合法 Op（协议 §1.4）', () => {
   const cases: Array<[string, unknown]> = [
@@ -119,6 +119,17 @@ describe('事务（parseOps，协议 §1.5）', () => {
     const r = parseOps([{ op: 'undo' }, { op: 'paint' }])
     expect(r.ok).toBe(false)
     if (!r.ok) expect(r.error).toContain('1')
+  })
+})
+
+describe('zorder 裸名归一（above/below 接受裸字符串）', () => {
+  it('above 裸名被归一为 {byName}', () => {
+    const r = parseOp({ op: 'zorder', target: { byName: '眼睛' }, to: { above: '头发' } })
+    expect(r.ok, r.ok ? '' : r.error).toBe(true)
+    if (r.ok) {
+      const op = r.op as Extract<Op, { op: 'zorder' }>
+      expect(op.to).toEqual({ above: { byName: '头发' } })
+    }
   })
 })
 
