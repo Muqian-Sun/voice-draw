@@ -12,7 +12,7 @@
  */
 import type { Request, Response } from 'express'
 import { z } from 'zod'
-import { SYSTEM_PROMPT } from './prompt.generated.js'
+import { PLANNER_PROMPT, SYSTEM_PROMPT } from './prompt.generated.js'
 
 // 火山方舟 Coding Plan（用户决策，弃七牛）：/api/coding 为 Anthropic 协议，
 // /api/coding/v3 为 OpenAI 兼容协议——本服务用后者，复用 chat/completions + SSE delta
@@ -22,15 +22,16 @@ const DEFAULT_BASE_URL = 'https://ark.cn-beijing.volces.com/api/coding/v3'
 const DEFAULT_MODEL = 'doubao-seed-code-2.0'
 const DEFAULT_VISION_MODEL = 'doubao-seed-code-2.0'
 
-// parse / plan 均关思考以求出图速度（首 token 快）；plan 质量改由"画后多轮异步自检精修"兜底
-export const FIRST_TOKEN_TIMEOUT_MS = { parse: 8_000, plan: 20_000 } as const
+// parse / plan / layout 均关思考以求出图速度（首 token 快）；plan 质量改由"画后多轮异步自检精修"兜底
+// layout 输出小（纯 JSON 布局），复用 parse 档超时
+export const FIRST_TOKEN_TIMEOUT_MS = { parse: 8_000, plan: 20_000, layout: 8_000 } as const
 /** 首 token 之后的总时长兜底（流卡死保护）；plan 长输出在 ~20 tok/s 上游需更宽 */
-export const TOTAL_TIMEOUT_MS = { parse: 30_000, plan: 90_000 } as const
+export const TOTAL_TIMEOUT_MS = { parse: 30_000, plan: 90_000, layout: 30_000 } as const
 
 const requestSchema = z
   .object({
     utterance: z.string().min(1),
-    mode: z.enum(['parse', 'plan']),
+    mode: z.enum(['parse', 'plan', 'layout']),
     scene: z.unknown(),
     asr_alternatives: z.array(z.string()).max(2).optional(),
     recent: z.array(z.object({ utterance: z.string(), summary: z.string() }).strict()).max(3).optional(),
@@ -53,7 +54,7 @@ interface ChatMessage {
   content: ChatContent
 }
 
-/** 组装上游消息：system 固定；user = 变化信息 JSON（带图时为多模态数组）；重试时追加上一轮输出与纠错指示 */
+/** 组装上游消息：system 按 mode 选择；user = 变化信息 JSON（带图时为多模态数组）；重试时追加上一轮输出与纠错指示 */
 export function buildMessages(body: LlmParseRequest): ChatMessage[] {
   const { retry, image, ...payload } = body
   const userContent: ChatMessage['content'] =
@@ -63,8 +64,9 @@ export function buildMessages(body: LlmParseRequest): ChatMessage[] {
           { type: 'text', text: JSON.stringify(payload) },
           { type: 'image_url', image_url: { url: image } },
         ]
+  const systemPrompt = body.mode === 'layout' ? PLANNER_PROMPT : SYSTEM_PROMPT
   const messages: ChatMessage[] = [
-    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'system', content: systemPrompt },
     { role: 'user', content: userContent },
   ]
   if (retry) {

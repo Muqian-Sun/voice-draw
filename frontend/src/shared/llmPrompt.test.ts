@@ -23,7 +23,7 @@ describe('buildSystemPrompt', () => {
       resolve(__dirname, '../../../backend/src/llm/prompt.generated.ts'),
       'utf8',
     )
-    const m = generated.match(/export const SYSTEM_PROMPT = (".*")\n?$/s)
+    const m = generated.match(/^export const SYSTEM_PROMPT = (".*")$/m)
     expect(m, 'prompt.generated.ts 格式异常').not.toBeNull()
     expect(JSON.parse(m![1])).toBe(prompt)
   })
