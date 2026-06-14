@@ -136,7 +136,9 @@ export async function orchestrateSubplans(
   // Step 3: 逐角色串行绘制
   for (const s of subjects) {
     const prompt =
-      `画${s.label}，整体居中于画布坐标(${s.cx},${s.cy})、占据约 ${s.w}x${s.h} 的区域` +
+      `画一个完整、精致的${s.label}：五官清晰且绝不被头发/帽子遮挡（先画脸、头发只框住脸侧、五官放最上层 zorder）、` +
+      `身体四肢俱全（含脚和鞋、手），细节到位、不要省略部件；` +
+      `整体居中于画布坐标(${s.cx},${s.cy})、缩放到约 ${s.w}x${s.h} 的区域内` +
       (style !== undefined ? `，画风：${style}` : '') +
       `。只画${s.label}这一个主体，不画背景或其它角色。`
     await draw(prompt, s.label)
