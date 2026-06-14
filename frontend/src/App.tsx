@@ -223,6 +223,7 @@ export default function App() {
     | { kind: 'engine'; remainingOps: Op[]; expecting: ExpectingItem[]; sayText?: string }
     | { kind: 'llm'; original: string; expecting: ExpectingItem[] }
   const pendingClarifyRef = useRef<PendingClarify | null>(null)
+  const llmBusyRef = useRef(false)
 
   const recordSuccess = useCallback((utterance: string, ops: Op[]) => {
     const summary = ops.map((o) => (o.op === 'create' ? `create ${o.shape}${o.name ? ` ${o.name}` : ''}` : o.op)).join('; ')
@@ -251,7 +252,11 @@ export default function App() {
           d('PARSE_DONE')
           d('EXEC_DONE')
         } else {
+          // 失败/澄清/拒识：从 parsing 走 PARSE_FAIL、从 executing（已首帧出图）走 EXEC_DONE，
+          // 两者都落到 speaking。缺 EXEC_DONE 时 executing 态的 PARSE_FAIL 是非法转移→FSM 卡死
+          // （配合"绘画中禁识别"门控会致麦克风变哑）。
           d('PARSE_FAIL')
+          d('EXEC_DONE')
         }
       }
       // 执行结果 → 播报文案：失败播错误码表文案（引擎 message 即口语化中文），成功播 sayText。
@@ -355,51 +360,119 @@ export default function App() {
       if (r === null) {
         const mode = decideMode(utterance)
         pushLog('info', `规则未命中 → 升级 LLM（mode=${mode}）…`)
+        if (llmBusyRef.current) {
+          // 在途有绘制：直接忽略本句，不调 advance——绘制中的请求正占着 FSM（executing），
+          // 这里复位会打断它。语音输入已被"绘画中禁识别"门控挡在前面，此分支基本只剩调试文本可达。
+          pushLog('warn', `正在绘制上一句，已忽略本句：「${utterance}」（请等画完再说）`)
+          return
+        }
+        llmBusyRef.current = true
         void (async () => {
-          const llmCtx = {
-            scene: historyRef.current.scene,
-            asrAlternatives: utterance !== trimmed ? [trimmed] : [],
-            recent: recentRef.current,
-            lastTransaction: lastTxRef.current,
-          }
+          try {
+            const llmCtx = {
+              scene: historyRef.current.scene,
+              asrAlternatives: utterance !== trimmed ? [trimmed] : [],
+              recent: recentRef.current,
+              lastTransaction: lastTxRef.current,
+            }
 
-          // v1.4 流式渐进绘制优先：LLM 边写边画（首个部件 ~2s 可见）
-          const base = historyRef.current
-          let painted = 0
-          // 流式容错（修复"画一半→画布清空→过一会完整重贴"）：单 op 执行失败绝不清空整幅。
-          // ① 前向引用（TARGET_NOT_FOUND，LLM 乱序）→ runner 暂存待依赖创建后重试；
-          // ② 同名歧义（AMBIGUOUS_TARGET，持久化场景里新主体部件名与旧的撞车，如末尾 group）
-          //    → 软跳过该 op（plan 的 group 跳过无妨，commit 时 autoGroup 仍编组），保留已画部分。
-          const runner = createForwardTolerantRunner(base.scene, (op, state) => {
-            painted += 1
-            // 首个部件上屏即把状态从"解析中"切到"执行中(绘制)"，避免长流期间一直显示"解析中"
-            if (painted === 1) voiceApiRef.current?.dispatch('PARSE_DONE')
-            historyRef.current = { ...historyRef.current, scene: state }
-            setHistory(historyRef.current)
-            // 绘画过程不语音播报（用户要求）：逐件 desc 仅进日志可见，不朗读；完成语在画完时统一播
-            if (op.op === 'create' && op.desc !== undefined) pushLog('info', `▸ ${op.desc}`)
-          })
-          const stream = await parseWithLlmStream(utterance, mode, llmCtx, (op) => runner.push(op))
-          const fin = runner.finish()
-          const work = fin.state
-          if (fin.skipped.length > 0 || fin.pending.length > 0) {
-            const s = fin.skipped.map((x) => x.error.code)
-            pushLog('warn', `流式渐进：跳过 ${fin.skipped.length} 个失败 op${s.length ? `（${[...new Set(s)].join('/')}）` : ''}、${fin.pending.length} 个悬空引用——保留已绘制部分，不清空`)
-          }
-          // 只有"一件都没画成"或流本身失败(stream.ok=false) 才回退缓冲；画成任意部件即提交（不再因单 op 失败清空重贴）
-          const execFailed = painted === 0
+            // v1.4 流式渐进绘制优先：LLM 边写边画（首个部件 ~2s 可见）
+            const base = historyRef.current
+            let painted = 0
+            // 流式容错（修复"画一半→画布清空→过一会完整重贴"）：单 op 执行失败绝不清空整幅。
+            // ① 前向引用（TARGET_NOT_FOUND，LLM 乱序）→ runner 暂存待依赖创建后重试；
+            // ② 同名歧义（AMBIGUOUS_TARGET，持久化场景里新主体部件名与旧的撞车，如末尾 group）
+            //    → 软跳过该 op（plan 的 group 跳过无妨，commit 时 autoGroup 仍编组），保留已画部分。
+            const runner = createForwardTolerantRunner(base.scene, (op, state) => {
+              painted += 1
+              // 首个部件上屏即把状态从"解析中"切到"执行中(绘制)"，避免长流期间一直显示"解析中"
+              if (painted === 1) voiceApiRef.current?.dispatch('PARSE_DONE')
+              historyRef.current = { ...historyRef.current, scene: state }
+              setHistory(historyRef.current)
+              // 绘画过程不语音播报（用户要求）：逐件 desc 仅进日志可见，不朗读；完成语在画完时统一播
+              if (op.op === 'create' && op.desc !== undefined) pushLog('info', `▸ ${op.desc}`)
+            })
+            const stream = await parseWithLlmStream(utterance, mode, llmCtx, (op) => runner.push(op))
+            const fin = runner.finish()
+            const work = fin.state
+            if (fin.skipped.length > 0 || fin.pending.length > 0) {
+              const s = fin.skipped.map((x) => x.error.code)
+              pushLog('warn', `流式渐进：跳过 ${fin.skipped.length} 个失败 op${s.length ? `（${[...new Set(s)].join('/')}）` : ''}、${fin.pending.length} 个悬空引用——保留已绘制部分，不清空`)
+            }
+            // 只有"一件都没画成"或流本身失败(stream.ok=false) 才回退缓冲；画成任意部件即提交（不再因单 op 失败清空重贴）
+            const execFailed = painted === 0
 
-          if (stream.ok && !execFailed) {
-            const res = stream.result
-            pushLog('info', `LLM 命中 ${res.source}（${res.latencyMs.toFixed(0)}ms，流式渐进 ${painted} 件）`)
+            if (stream.ok && !execFailed) {
+              const res = stream.result
+              pushLog('info', `LLM 命中 ${res.source}（${res.latencyMs.toFixed(0)}ms，流式渐进 ${painted} 件）`)
+              setMetrics((m) => ({
+                ...m,
+                llmParse: m.llmParse + (res.source === 'llm-parse' ? 1 : 0),
+                llmPlan: m.llmPlan + (res.source === 'llm-plan' ? 1 : 0),
+                last: `${res.source}·${(res.latencyMs / 1000).toFixed(1)}s·流式`,
+              }))
+              if (res.intent === 'clarify') {
+                advance(false)
+                if (res.clarify !== undefined && res.clarify.expecting.length > 0) {
+                  pendingClarifyRef.current = {
+                    kind: 'llm',
+                    original: utterance,
+                    expecting: res.clarify.expecting.map((label) => ({ label, id: '' })),
+                  }
+                }
+                say(res.clarify?.question ?? res.say ?? '能再说明确一点吗？')
+                return
+              }
+              if (res.intent === 'reject') {
+                advance(false)
+                say(res.say ?? '这个我帮不了，试试绘图指令')
+                return
+              }
+              advance(true)
+              const groupName = res.source === 'llm-plan' ? (extractPlanSubject(utterance) ?? undefined) : undefined
+              const committed = commitIncremental(base, work, { autoGroupName: groupName })
+              historyRef.current = committed
+              setHistory(committed)
+              if (groupName !== undefined && committed.scene !== work) {
+                pushLog('info', `已自动编组「${groupName}」（整组移动/缩放/删除生效）`)
+              }
+              // 只在"画完(本次新增了对象)"时播报完成语；纯编辑/调整过程静默（用户要求）
+              if (res.ops.some((o) => o.op === 'create')) say(res.say)
+              recordSuccess(utterance, res.ops)
+              if (res.source === 'llm-plan') suggestAfterPlan() // v1.7：创作完成给一条共创建议
+              return
+            }
+
+            // 回滚渐进内容，退回缓冲模式
+            if (painted > 0) {
+              historyRef.current = base
+              setHistory(base)
+            }
+            pushLog('warn', `流式路径未完成（${stream.ok ? '执行中断' : stream.error}）→ 回退缓冲模式…`)
+            const llm = await parseWithLlm(utterance, mode, {
+              scene: historyRef.current.scene,
+              asrAlternatives: utterance !== trimmed ? [trimmed] : [],
+              recent: recentRef.current,
+              lastTransaction: lastTxRef.current,
+            })
+            if (!llm.ok) {
+              pushLog('error', `LLM 解析失败：${llm.error}`)
+              setMetrics((m) => ({ ...m, fails: m.fails + 1, last: 'LLM 失败' }))
+              advance(false)
+              say('没听懂，请换个说法')
+              return
+            }
+            const res = llm.result
+            pushLog('info', `LLM 命中 ${res.source}（${res.latencyMs.toFixed(0)}ms，confidence ${res.confidence.toFixed(2)}）`)
             setMetrics((m) => ({
               ...m,
               llmParse: m.llmParse + (res.source === 'llm-parse' ? 1 : 0),
               llmPlan: m.llmPlan + (res.source === 'llm-plan' ? 1 : 0),
-              last: `${res.source}·${(res.latencyMs / 1000).toFixed(1)}s·流式`,
+              last: `${res.source}·${(res.latencyMs / 1000).toFixed(1)}s`,
             }))
             if (res.intent === 'clarify') {
               advance(false)
+              // LLM 给出 expecting → 开快匹配窗口，命中后联合原话重新解析（协议 §2.3）
               if (res.clarify !== undefined && res.clarify.expecting.length > 0) {
                 pendingClarifyRef.current = {
                   kind: 'llm',
@@ -416,79 +489,22 @@ export default function App() {
               return
             }
             advance(true)
+            // llm-plan：本事务新建对象自动编组（组名=话术主名词，§5.1），随后 desc 逐条进度播报
             const groupName = res.source === 'llm-plan' ? (extractPlanSubject(utterance) ?? undefined) : undefined
-            const committed = commitIncremental(base, work, { autoGroupName: groupName })
-            historyRef.current = committed
-            setHistory(committed)
-            if (groupName !== undefined && committed.scene !== work) {
-              pushLog('info', `已自动编组「${groupName}」（整组移动/缩放/删除生效）`)
-            }
-            // 只在"画完(本次新增了对象)"时播报完成语；纯编辑/调整过程静默（用户要求）
-            if (res.ops.some((o) => o.op === 'create')) say(res.say)
-            recordSuccess(utterance, res.ops)
-            if (res.source === 'llm-plan') suggestAfterPlan() // v1.7：创作完成给一条共创建议
-            return
-          }
-
-          // 回滚渐进内容，退回缓冲模式
-          if (painted > 0) {
-            historyRef.current = base
-            setHistory(base)
-          }
-          pushLog('warn', `流式路径未完成（${stream.ok ? '执行中断' : stream.error}）→ 回退缓冲模式…`)
-          const llm = await parseWithLlm(utterance, mode, {
-            scene: historyRef.current.scene,
-            asrAlternatives: utterance !== trimmed ? [trimmed] : [],
-            recent: recentRef.current,
-            lastTransaction: lastTxRef.current,
-          })
-          if (!llm.ok) {
-            pushLog('error', `LLM 解析失败：${llm.error}`)
-            setMetrics((m) => ({ ...m, fails: m.fails + 1, last: 'LLM 失败' }))
-            advance(false)
-            say('没听懂，请换个说法')
-            return
-          }
-          const res = llm.result
-          pushLog('info', `LLM 命中 ${res.source}（${res.latencyMs.toFixed(0)}ms，confidence ${res.confidence.toFixed(2)}）`)
-          setMetrics((m) => ({
-            ...m,
-            llmParse: m.llmParse + (res.source === 'llm-parse' ? 1 : 0),
-            llmPlan: m.llmPlan + (res.source === 'llm-plan' ? 1 : 0),
-            last: `${res.source}·${(res.latencyMs / 1000).toFixed(1)}s`,
-          }))
-          if (res.intent === 'clarify') {
-            advance(false)
-            // LLM 给出 expecting → 开快匹配窗口，命中后联合原话重新解析（协议 §2.3）
-            if (res.clarify !== undefined && res.clarify.expecting.length > 0) {
-              pendingClarifyRef.current = {
-                kind: 'llm',
-                original: utterance,
-                expecting: res.clarify.expecting.map((label) => ({ label, id: '' })),
+            const outcome = execOps(res.ops, groupName)
+            const ok = !('error' in outcome && outcome.error)
+            if (res.source === 'llm-plan' && ok) {
+              if (groupName !== undefined) pushLog('info', `已自动编组「${groupName}」（整组移动/缩放/删除生效）`)
+              // desc 只进日志不播报：图像瞬时画完，逐条语音报步骤是冗余（用户反馈）；完成语照播
+              for (const o of res.ops) {
+                if (o.op === 'create' && o.desc !== undefined) pushLog('info', `▸ ${o.desc}`)
               }
             }
-            say(res.clarify?.question ?? res.say ?? '能再说明确一点吗？')
-            return
+            if (speakOutcome(outcome, res.say, res.ops)) recordSuccess(utterance, res.ops)
+            if (res.source === 'llm-plan' && ok) suggestAfterPlan() // v1.7：创作完成给一条共创建议
+          } finally {
+            llmBusyRef.current = false
           }
-          if (res.intent === 'reject') {
-            advance(false)
-            say(res.say ?? '这个我帮不了，试试绘图指令')
-            return
-          }
-          advance(true)
-          // llm-plan：本事务新建对象自动编组（组名=话术主名词，§5.1），随后 desc 逐条进度播报
-          const groupName = res.source === 'llm-plan' ? (extractPlanSubject(utterance) ?? undefined) : undefined
-          const outcome = execOps(res.ops, groupName)
-          const ok = !('error' in outcome && outcome.error)
-          if (res.source === 'llm-plan' && ok) {
-            if (groupName !== undefined) pushLog('info', `已自动编组「${groupName}」（整组移动/缩放/删除生效）`)
-            // desc 只进日志不播报：图像瞬时画完，逐条语音报步骤是冗余（用户反馈）；完成语照播
-            for (const o of res.ops) {
-              if (o.op === 'create' && o.desc !== undefined) pushLog('info', `▸ ${o.desc}`)
-            }
-          }
-          if (speakOutcome(outcome, res.say, res.ops)) recordSuccess(utterance, res.ops)
-          if (res.source === 'llm-plan' && ok) suggestAfterPlan() // v1.7：创作完成给一条共创建议
         })()
         return
       }
