@@ -416,20 +416,20 @@ body::before {
   <a class="side-nav-item active" href="#hero" onclick="navTo(event,'hero')">
     <span class="nub"></span><span class="nlabel">VOICEDRAW</span>
   </a>
+  <a class="side-nav-item" href="#capabilities" onclick="navTo(event,'capabilities')">
+    <span class="nub"></span><span class="nlabel">§ Ⅰ 能力图谱</span>
+  </a>
   <a class="side-nav-item" href="#pipeline" onclick="navTo(event,'pipeline')">
-    <span class="nub"></span><span class="nlabel">§ Ⅰ 流水线</span>
+    <span class="nub"></span><span class="nlabel">§ Ⅱ 流水线</span>
   </a>
   <a class="side-nav-item" href="#funnel" onclick="navTo(event,'funnel')">
-    <span class="nub"></span><span class="nlabel">§ Ⅱ 理解层</span>
+    <span class="nub"></span><span class="nlabel">§ Ⅲ 理解层</span>
   </a>
   <a class="side-nav-item" href="#sequence" onclick="navTo(event,'sequence')">
-    <span class="nub"></span><span class="nlabel">§ Ⅲ 时序图</span>
+    <span class="nub"></span><span class="nlabel">§ Ⅳ 时序图</span>
   </a>
   <a class="side-nav-item" href="#statemachine" onclick="navTo(event,'statemachine')">
-    <span class="nub"></span><span class="nlabel">§ Ⅳ 状态机</span>
-  </a>
-  <a class="side-nav-item" href="#capabilities" onclick="navTo(event,'capabilities')">
-    <span class="nub"></span><span class="nlabel">§ Ⅴ 能力图谱</span>
+    <span class="nub"></span><span class="nlabel">§ Ⅴ 状态机</span>
   </a>
   <a class="side-nav-item" href="#orchestration" onclick="navTo(event,'orchestration')">
     <span class="nub"></span><span class="nlabel">§ Ⅵ 编排</span>
@@ -537,12 +537,130 @@ body::before {
 <div class="dbl-rule"></div>
 
 <!-- =====================================================
-     §Ⅰ  六层闭环流水线
+     §Ⅰ  产品功能能力图谱（用户视角）
+     ===================================================== -->
+<section id="capabilities" class="section-block">
+  <div class="container">
+    <div class="section-header reveal">
+      <div class="section-num">§ Ⅰ &nbsp; 功能能力</div>
+      <h2 class="section-title">产品功能划分</h2>
+      <p class="section-sub">用户视角——六类功能，开口即用，全程无鼠标键盘。</p>
+    </div>
+
+    <div class="reveal" style="transition-delay:.08s">
+      <div class="diagram-wrap">
+        <svg viewBox="0 0 960 520" xmlns="http://www.w3.org/2000/svg" style="width:100%;min-width:640px" aria-label="产品功能能力图谱">
+
+          <!-- ══ 第一行：创作 / 编辑 / 多轮交互 ══ -->
+
+          <!-- ① 创作 -->
+          <rect x="20" y="30" width="280" height="190" rx="4" fill="#EBE4D6" stroke="#C8483B" stroke-width="1.8"/>
+          <rect x="20" y="30" width="280" height="3" fill="#C8483B" rx="2"/>
+          <!-- 标题区 -->
+          <text x="60" y="58" font-family="Georgia,'Times New Roman',serif" font-size="16" fill="#C8483B">创作</text>
+          <line x1="20" y1="65" x2="300" y2="65" stroke="#C8483B" stroke-width=".6" opacity=".35"/>
+          <!-- 功能点 -->
+          <text x="36" y="88"  font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  基础绘图（形状、颜色、大小）</text>
+          <text x="36" y="108" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  单主体创作拆解</text>
+          <text x="52" y="124" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">「画海绵宝宝」→ plan 拆 op</text>
+          <text x="36" y="144" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  多主体场景拆解</text>
+          <text x="52" y="160" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">「白雪公主和七个小矮人」→ 隔离子计划</text>
+          <text x="36" y="180" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  放射复制（花瓣 / 光芒）</text>
+          <text x="52" y="196" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">「画八朵花瓣」→ rotate+copy</text>
+
+          <!-- ② 编辑 -->
+          <rect x="340" y="30" width="280" height="190" rx="4" fill="#EBE4D6" stroke="#2E5A8C" stroke-width="1.8"/>
+          <rect x="340" y="30" width="280" height="3" fill="#2E5A8C" rx="2"/>
+          <text x="380" y="58" font-family="Georgia,'Times New Roman',serif" font-size="16" fill="#2E5A8C">编辑</text>
+          <line x1="340" y1="65" x2="620" y2="65" stroke="#2E5A8C" stroke-width=".6" opacity=".35"/>
+          <text x="356" y="88"  font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  移动 / 缩放 / 改色 / 删除</text>
+          <text x="356" y="108" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  旋转 / 图层(zorder) / 命名</text>
+          <text x="356" y="128" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  相对定位</text>
+          <text x="372" y="144" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">「把圆移到矩形左边」</text>
+          <text x="356" y="164" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  相对尺寸</text>
+          <text x="372" y="180" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">「画棵比雪人矮一半的树」</text>
+          <text x="356" y="200" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">镜像 / 对齐 / 等距分布</text>
+
+          <!-- ③ 多轮交互 -->
+          <rect x="660" y="30" width="280" height="190" rx="4" fill="#EBE4D6" stroke="#3A3630" stroke-width="1.8"/>
+          <rect x="660" y="30" width="280" height="3" fill="#3A3630" rx="2"/>
+          <text x="700" y="58" font-family="Georgia,'Times New Roman',serif" font-size="16" fill="#1C1A17">多轮交互</text>
+          <line x1="660" y1="65" x2="940" y2="65" stroke="#3A3630" stroke-width=".6" opacity=".35"/>
+          <text x="676" y="88"  font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  焦点指代（"它" / "这个"）</text>
+          <text x="692" y="104" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">「把它变大」→ 消解最近焦点对象</text>
+          <text x="676" y="124" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  特征消歧</text>
+          <text x="692" y="140" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">「左边那个」→ 匹配坐标特征</text>
+          <text x="676" y="160" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  澄清多轮</text>
+          <text x="692" y="176" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">AMBIGUOUS_TARGET → 追问 → 重解析</text>
+          <text x="676" y="196" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">expecting 快匹配，无需重跑 LLM</text>
+
+          <!-- ══ 第二行：语音容错 / 语音反馈 / 画布 ══ -->
+
+          <!-- ④ 语音容错 -->
+          <rect x="20" y="270" width="280" height="190" rx="4" fill="#EBE4D6" stroke="#C8483B" stroke-width="1.8"/>
+          <rect x="20" y="270" width="280" height="3" fill="#C8483B" rx="2"/>
+          <text x="60" y="298" font-family="Georgia,'Times New Roman',serif" font-size="16" fill="#C8483B">语音容错</text>
+          <line x1="20" y1="305" x2="300" y2="305" stroke="#C8483B" stroke-width=".6" opacity=".35"/>
+          <text x="36" y="328" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  同音词自动纠错</text>
+          <text x="52" y="344" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">「花一个园」→「画一个圆」</text>
+          <text x="36" y="364" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  拼音编辑距离回退</text>
+          <text x="52" y="380" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">词表未命中时 pinyin 相似度补救</text>
+          <text x="36" y="400" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  破坏性操作语音确认</text>
+          <text x="52" y="416" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">「清空画布」→ TTS 问询 → 确认才执行</text>
+          <text x="36" y="436" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  投机预解析降延迟</text>
+          <text x="52" y="452" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">ASR 流式结果边到边预热 LLM</text>
+
+          <!-- ⑤ 语音反馈 -->
+          <rect x="340" y="270" width="280" height="190" rx="4" fill="#EBE4D6" stroke="#2E5A8C" stroke-width="1.8"/>
+          <rect x="340" y="270" width="280" height="3" fill="#2E5A8C" rx="2"/>
+          <text x="380" y="298" font-family="Georgia,'Times New Roman',serif" font-size="16" fill="#2E5A8C">语音反馈</text>
+          <line x1="340" y1="305" x2="620" y2="305" stroke="#2E5A8C" stroke-width=".6" opacity=".35"/>
+          <text x="356" y="328" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  TTS 播报操作结果</text>
+          <text x="372" y="344" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">豆包语音合成 2.0 / speechSynthesis 兜底</text>
+          <text x="356" y="364" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  主动建议</text>
+          <text x="372" y="380" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">画完自动提示可继续的方向</text>
+          <text x="356" y="400" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  创作进度播报</text>
+          <text x="372" y="416" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">「正在画主体 A……主体 B 完成」</text>
+          <text x="356" y="436" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  半双工互斥</text>
+          <text x="372" y="452" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">绘画过程静音，画完再播报</text>
+
+          <!-- ⑥ 画布 -->
+          <rect x="660" y="270" width="280" height="190" rx="4" fill="#EBE4D6" stroke="#8A8275" stroke-width="1.8"/>
+          <rect x="660" y="270" width="280" height="3" fill="#8A8275" rx="2"/>
+          <text x="700" y="298" font-family="Georgia,'Times New Roman',serif" font-size="16" fill="#5C5650">画布</text>
+          <line x1="660" y1="305" x2="940" y2="305" stroke="#8A8275" stroke-width=".6" opacity=".35"/>
+          <text x="676" y="328" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  撤销 / 重做（undo / redo）</text>
+          <text x="692" y="344" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">场景快照栈，任意步回退</text>
+          <text x="676" y="364" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  清空画布</text>
+          <text x="692" y="380" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">破坏性操作需语音二次确认</text>
+          <text x="676" y="400" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  导出图片</text>
+          <text x="692" y="416" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">「导出图片」→ 保存为 PNG</text>
+          <text x="676" y="436" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  场景持久化</text>
+          <text x="692" y="452" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">刷新浏览器保留当前画面</text>
+
+          <!-- 分组标题装饰 -->
+          <text x="160" y="16" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="8" fill="#C8483B" letter-spacing=".16em">— 绘图核心 —</text>
+          <text x="480" y="16" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="8" fill="#2E5A8C" letter-spacing=".16em">— 绘图核心 —</text>
+          <text x="800" y="16" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="8" fill="#5C5650" letter-spacing=".16em">— 交互智能 —</text>
+          <text x="160" y="258" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="8" fill="#C8483B" letter-spacing=".16em">— 可靠性 —</text>
+          <text x="480" y="258" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="8" fill="#2E5A8C" letter-spacing=".16em">— 可靠性 —</text>
+          <text x="800" y="258" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="8" fill="#5C5650" letter-spacing=".16em">— 工具 —</text>
+
+        </svg>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="dbl-rule"></div>
+
+<!-- =====================================================
+     §Ⅱ  六层闭环流水线
      ===================================================== -->
 <section id="pipeline" class="section-block">
   <div class="container">
     <div class="section-header reveal">
-      <div class="section-num">§ Ⅰ &nbsp; 核心架构</div>
+      <div class="section-num">§ Ⅱ &nbsp; 核心架构</div>
       <h2 class="section-title">六层闭环流水线</h2>
       <p class="section-sub">语音输入经六个正交层逐级处理，渲染成画并语音反馈，再触发下一轮说话。</p>
     </div>
@@ -648,12 +766,12 @@ body::before {
 <div class="dbl-rule"></div>
 
 <!-- =====================================================
-     §Ⅱ  三级理解漏斗
+     §Ⅲ  三级理解漏斗
      ===================================================== -->
 <section id="funnel" class="section-block">
   <div class="container">
     <div class="section-header reveal">
-      <div class="section-num">§ Ⅱ &nbsp; 指令理解</div>
+      <div class="section-num">§ Ⅲ &nbsp; 指令理解</div>
       <h2 class="section-title">三级理解漏斗</h2>
       <p class="section-sub">规则快路径几乎即时，LLM 兜底通用，多轮上下文贯穿全程。</p>
     </div>
@@ -705,12 +823,12 @@ body::before {
 <div class="dbl-rule"></div>
 
 <!-- =====================================================
-     §Ⅲ  端到端时序图（新增）
+     §Ⅳ  端到端时序图（新增）
      ===================================================== -->
 <section id="sequence" class="section-block">
   <div class="container">
     <div class="section-header reveal">
-      <div class="section-num">§ Ⅲ &nbsp; 端到端时序</div>
+      <div class="section-num">§ Ⅳ &nbsp; 端到端时序</div>
       <h2 class="section-title">请求时序图</h2>
       <p class="section-sub">一句话从声波到画布的完整旅程——延迟瓶颈 95% 在 LLM 生成。</p>
     </div>
@@ -843,12 +961,12 @@ body::before {
 <div class="dbl-rule"></div>
 
 <!-- =====================================================
-     §Ⅳ  主状态机图（新增）
+     §Ⅴ  主状态机图（新增）
      ===================================================== -->
 <section id="statemachine" class="section-block">
   <div class="container">
     <div class="section-header reveal">
-      <div class="section-num">§ Ⅳ &nbsp; 前端 FSM</div>
+      <div class="section-num">§ Ⅴ &nbsp; 前端 FSM</div>
       <h2 class="section-title">主状态机</h2>
       <p class="section-sub">VoiceDraw 前端六状态有限状态机——语音驱动、破坏性操作必须确认、歧义必须澄清。</p>
     </div>
@@ -950,124 +1068,6 @@ body::before {
           <text x="218" y="341" font-family="ui-monospace,Menlo,monospace" font-size="9" fill="#5C5650">安全确认分支</text>
           <rect x="380" y="330" width="12" height="12" rx="2" fill="none" stroke="#8A8275" stroke-width="1.5" stroke-dasharray="4 2"/>
           <text x="398" y="341" font-family="ui-monospace,Menlo,monospace" font-size="9" fill="#5C5650">歧义澄清分支</text>
-        </svg>
-      </div>
-    </div>
-  </div>
-</section>
-
-<div class="dbl-rule"></div>
-
-<!-- =====================================================
-     §Ⅴ  产品功能能力图谱（用户视角）
-     ===================================================== -->
-<section id="capabilities" class="section-block">
-  <div class="container">
-    <div class="section-header reveal">
-      <div class="section-num">§ Ⅴ &nbsp; 功能能力</div>
-      <h2 class="section-title">产品功能划分</h2>
-      <p class="section-sub">用户视角——六类功能，开口即用，全程无鼠标键盘。</p>
-    </div>
-
-    <div class="reveal" style="transition-delay:.08s">
-      <div class="diagram-wrap">
-        <svg viewBox="0 0 960 520" xmlns="http://www.w3.org/2000/svg" style="width:100%;min-width:640px" aria-label="产品功能能力图谱">
-
-          <!-- ══ 第一行：创作 / 编辑 / 多轮交互 ══ -->
-
-          <!-- ① 创作 -->
-          <rect x="20" y="30" width="280" height="190" rx="4" fill="#EBE4D6" stroke="#C8483B" stroke-width="1.8"/>
-          <rect x="20" y="30" width="280" height="3" fill="#C8483B" rx="2"/>
-          <!-- 标题区 -->
-          <text x="60" y="58" font-family="Georgia,'Times New Roman',serif" font-size="16" fill="#C8483B">创作</text>
-          <line x1="20" y1="65" x2="300" y2="65" stroke="#C8483B" stroke-width=".6" opacity=".35"/>
-          <!-- 功能点 -->
-          <text x="36" y="88"  font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  基础绘图（形状、颜色、大小）</text>
-          <text x="36" y="108" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  单主体创作拆解</text>
-          <text x="52" y="124" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">「画海绵宝宝」→ plan 拆 op</text>
-          <text x="36" y="144" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  多主体场景拆解</text>
-          <text x="52" y="160" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">「白雪公主和七个小矮人」→ 隔离子计划</text>
-          <text x="36" y="180" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  放射复制（花瓣 / 光芒）</text>
-          <text x="52" y="196" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">「画八朵花瓣」→ rotate+copy</text>
-
-          <!-- ② 编辑 -->
-          <rect x="340" y="30" width="280" height="190" rx="4" fill="#EBE4D6" stroke="#2E5A8C" stroke-width="1.8"/>
-          <rect x="340" y="30" width="280" height="3" fill="#2E5A8C" rx="2"/>
-          <text x="380" y="58" font-family="Georgia,'Times New Roman',serif" font-size="16" fill="#2E5A8C">编辑</text>
-          <line x1="340" y1="65" x2="620" y2="65" stroke="#2E5A8C" stroke-width=".6" opacity=".35"/>
-          <text x="356" y="88"  font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  移动 / 缩放 / 改色 / 删除</text>
-          <text x="356" y="108" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  旋转 / 图层(zorder) / 命名</text>
-          <text x="356" y="128" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  相对定位</text>
-          <text x="372" y="144" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">「把圆移到矩形左边」</text>
-          <text x="356" y="164" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  相对尺寸</text>
-          <text x="372" y="180" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">「画棵比雪人矮一半的树」</text>
-          <text x="356" y="200" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">镜像 / 对齐 / 等距分布</text>
-
-          <!-- ③ 多轮交互 -->
-          <rect x="660" y="30" width="280" height="190" rx="4" fill="#EBE4D6" stroke="#3A3630" stroke-width="1.8"/>
-          <rect x="660" y="30" width="280" height="3" fill="#3A3630" rx="2"/>
-          <text x="700" y="58" font-family="Georgia,'Times New Roman',serif" font-size="16" fill="#1C1A17">多轮交互</text>
-          <line x1="660" y1="65" x2="940" y2="65" stroke="#3A3630" stroke-width=".6" opacity=".35"/>
-          <text x="676" y="88"  font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  焦点指代（"它" / "这个"）</text>
-          <text x="692" y="104" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">「把它变大」→ 消解最近焦点对象</text>
-          <text x="676" y="124" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  特征消歧</text>
-          <text x="692" y="140" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">「左边那个」→ 匹配坐标特征</text>
-          <text x="676" y="160" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  澄清多轮</text>
-          <text x="692" y="176" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">AMBIGUOUS_TARGET → 追问 → 重解析</text>
-          <text x="676" y="196" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">expecting 快匹配，无需重跑 LLM</text>
-
-          <!-- ══ 第二行：语音容错 / 语音反馈 / 画布 ══ -->
-
-          <!-- ④ 语音容错 -->
-          <rect x="20" y="270" width="280" height="190" rx="4" fill="#EBE4D6" stroke="#C8483B" stroke-width="1.8"/>
-          <rect x="20" y="270" width="280" height="3" fill="#C8483B" rx="2"/>
-          <text x="60" y="298" font-family="Georgia,'Times New Roman',serif" font-size="16" fill="#C8483B">语音容错</text>
-          <line x1="20" y1="305" x2="300" y2="305" stroke="#C8483B" stroke-width=".6" opacity=".35"/>
-          <text x="36" y="328" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  同音词自动纠错</text>
-          <text x="52" y="344" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">「花一个园」→「画一个圆」</text>
-          <text x="36" y="364" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  拼音编辑距离回退</text>
-          <text x="52" y="380" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">词表未命中时 pinyin 相似度补救</text>
-          <text x="36" y="400" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  破坏性操作语音确认</text>
-          <text x="52" y="416" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">「清空画布」→ TTS 问询 → 确认才执行</text>
-          <text x="36" y="436" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  投机预解析降延迟</text>
-          <text x="52" y="452" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">ASR 流式结果边到边预热 LLM</text>
-
-          <!-- ⑤ 语音反馈 -->
-          <rect x="340" y="270" width="280" height="190" rx="4" fill="#EBE4D6" stroke="#2E5A8C" stroke-width="1.8"/>
-          <rect x="340" y="270" width="280" height="3" fill="#2E5A8C" rx="2"/>
-          <text x="380" y="298" font-family="Georgia,'Times New Roman',serif" font-size="16" fill="#2E5A8C">语音反馈</text>
-          <line x1="340" y1="305" x2="620" y2="305" stroke="#2E5A8C" stroke-width=".6" opacity=".35"/>
-          <text x="356" y="328" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  TTS 播报操作结果</text>
-          <text x="372" y="344" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">豆包语音合成 2.0 / speechSynthesis 兜底</text>
-          <text x="356" y="364" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  主动建议</text>
-          <text x="372" y="380" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">画完自动提示可继续的方向</text>
-          <text x="356" y="400" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  创作进度播报</text>
-          <text x="372" y="416" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">「正在画主体 A……主体 B 完成」</text>
-          <text x="356" y="436" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  半双工互斥</text>
-          <text x="372" y="452" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">绘画过程静音，画完再播报</text>
-
-          <!-- ⑥ 画布 -->
-          <rect x="660" y="270" width="280" height="190" rx="4" fill="#EBE4D6" stroke="#8A8275" stroke-width="1.8"/>
-          <rect x="660" y="270" width="280" height="3" fill="#8A8275" rx="2"/>
-          <text x="700" y="298" font-family="Georgia,'Times New Roman',serif" font-size="16" fill="#5C5650">画布</text>
-          <line x1="660" y1="305" x2="940" y2="305" stroke="#8A8275" stroke-width=".6" opacity=".35"/>
-          <text x="676" y="328" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  撤销 / 重做（undo / redo）</text>
-          <text x="692" y="344" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">场景快照栈，任意步回退</text>
-          <text x="676" y="364" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  清空画布</text>
-          <text x="692" y="380" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">破坏性操作需语音二次确认</text>
-          <text x="676" y="400" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  导出图片</text>
-          <text x="692" y="416" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">「导出图片」→ 保存为 PNG</text>
-          <text x="676" y="436" font-family="ui-monospace,Menlo,monospace" font-size="9.5" fill="#3A3630">·  场景持久化</text>
-          <text x="692" y="452" font-family="ui-monospace,Menlo,monospace" font-size="8.5" fill="#8A8275">刷新浏览器保留当前画面</text>
-
-          <!-- 分组标题装饰 -->
-          <text x="160" y="16" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="8" fill="#C8483B" letter-spacing=".16em">— 绘图核心 —</text>
-          <text x="480" y="16" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="8" fill="#2E5A8C" letter-spacing=".16em">— 绘图核心 —</text>
-          <text x="800" y="16" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="8" fill="#5C5650" letter-spacing=".16em">— 交互智能 —</text>
-          <text x="160" y="258" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="8" fill="#C8483B" letter-spacing=".16em">— 可靠性 —</text>
-          <text x="480" y="258" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="8" fill="#2E5A8C" letter-spacing=".16em">— 可靠性 —</text>
-          <text x="800" y="258" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="8" fill="#5C5650" letter-spacing=".16em">— 工具 —</text>
-
         </svg>
       </div>
     </div>
@@ -1217,7 +1217,7 @@ body::before {
     });
   }
 
-  var sections = ['hero','pipeline','funnel','sequence','statemachine','capabilities','orchestration'];
+  var sections = ['hero','capabilities','pipeline','funnel','sequence','statemachine','orchestration'];
   var navItems = document.querySelectorAll('.side-nav-item');
   function updateNav() {
     var scrollY = window.scrollY + window.innerHeight * 0.38;
