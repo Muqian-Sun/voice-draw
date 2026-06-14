@@ -141,10 +141,12 @@ const bboxOf = (o: SceneObject): BBox => {
 
 // ---------- group 引用语义（§5.6） ----------
 
-/** 组的全部成员（group 并入、focus 高亮等场景用） */
+/** 组的全部成员（group 并入、focus 高亮等场景用）。
+ *  双保险：过滤掉背景对象，即使背景万一被意外编入组，几何操作也不会波及它。
+ */
 function membersOf(state: SceneState, obj: SceneObject): SceneObject[] {
   if (obj.groupId === undefined) return [obj]
-  return state.objects.filter((o) => o.groupId === obj.groupId)
+  return state.objects.filter((o) => o.groupId === obj.groupId && !o.background)
 }
 
 /**
