@@ -372,6 +372,24 @@ const exportOpSchema = z
   })
   .strict()
 
+// v2.x 放射复制：把一个部件绕中心等角复制成 N 份（花瓣/光芒/轮辐/雪花臂/齿轮齿——引擎精确均布，
+// 胜过 LLM 手画一圈不齐）。mirror 的 N 重泛化。
+const radialOpSchema = z
+  .object({
+    op: z.literal('radial'),
+    target: targetSelectorSchema,
+    /** 旋转中心：某对象（取其中心）或显式坐标点 */
+    about: z.union([
+      targetSelectorSchema,
+      z.object({ x: z.number(), y: z.number() }).strict(),
+    ]),
+    /** 总份数（含原件）；引擎补 count-1 个旋转副本，步长 360/count 度 */
+    count: z.number().int().min(2).max(64),
+    name: z.string().min(1).optional(),
+    desc: z.string().optional(),
+  })
+  .strict()
+
 export const opSchema = z
   .discriminatedUnion('op', [
     createOpSchema,
@@ -386,6 +404,7 @@ export const opSchema = z
     ungroupOpSchema,
     zorderOpSchema,
     mirrorOpSchema,
+    radialOpSchema,
     alignOpSchema,
     distributeOpSchema,
     undoOpSchema,

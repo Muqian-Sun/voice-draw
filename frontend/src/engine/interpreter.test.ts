@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { Op } from '../dsl'
+import { parseOp } from '../dsl/schema'
 import { executeTransaction } from './interpreter'
-import { createEmptyScene, getBBox, type SceneState } from './scene'
+import { createEmptyScene, getBBox, getCenter, type SceneState } from './scene'
 
 /** 测试辅助：从空场景执行事务，断言无错误 */
 function run(ops: Op[], from?: SceneState) {
@@ -636,6 +637,117 @@ describe('v1.5 表达力扩展', () => {
     const sun = s.objects.find((o) => o.name === '太阳')!
     const cloud = s.objects.find((o) => o.name === '云')!
     expect(sun.z).toBeLessThan(cloud.z)
+  })
+})
+
+describe('v2.x radial 放射复制', () => {
+  // 旋转一个点绕中心（参考 interpreter.ts 里的 rotatePoint）
+  function rotPt(px: number, py: number, cx: number, cy: number, deg: number) {
+    const rad = (deg * Math.PI) / 180
+    const cos = Math.cos(rad)
+    const sin = Math.sin(rad)
+    const dx = px - cx
+    const dy = py - cy
+    return { x: cx + dx * cos - dy * sin, y: cy + dx * sin + dy * cos }
+  }
+
+  it('schema 边界：count=1 和 count=65 被拒绝；count=2 和 count=64 通过', () => {
+    const base = { op: 'radial' as const, target: { byName: '花瓣' }, about: { x: 512, y: 384 } }
+    expect(parseOp({ ...base, count: 1 }).ok).toBe(false)
+    expect(parseOp({ ...base, count: 65 }).ok).toBe(false)
+    expect(parseOp({ ...base, count: 2 }).ok).toBe(true)
+    expect(parseOp({ ...base, count: 64 }).ok).toBe(true)
+  })
+
+  it('count=N 产生 N-1 个新对象（总计 N 个含原件），焦点留在原件', () => {
+    const s = run([
+      { op: 'create', shape: 'circle', name: '花心', at: { x: 400, y: 300 }, size: 30 },
+      { op: 'create', shape: 'circle', name: '花瓣', at: { x: 400, y: 180 }, size: 20 },
+      { op: 'radial', target: { byName: '花瓣' }, about: { byName: '花心' }, count: 5 },
+    ])
+    const petals = s.objects.filter((o) => o.name?.startsWith('花瓣'))
+    expect(petals).toHaveLength(5) // 原件 + 4 副本
+    expect(s.focusId).toBe(s.objects.find((o) => o.name === '花瓣')!.id)
+  })
+
+  it('图元 radial，count=3，about 命名对象：副本中心绕花心等角旋转 120/240 度', () => {
+    const hubX = 400
+    const hubY = 300
+    const petalX = 400
+    const petalY = 180 // 直接在花心正上方 (offset = -120 in y)
+
+    const s = run([
+      { op: 'create', shape: 'circle', name: '花心', at: { x: hubX, y: hubY }, size: 30 },
+      { op: 'create', shape: 'circle', name: '花瓣', at: { x: petalX, y: petalY }, size: 20 },
+      { op: 'radial', target: { byName: '花瓣' }, about: { byName: '花心' }, count: 3 },
+    ])
+    const copies = s.objects
+      .filter((o) => o.name?.startsWith('花瓣-放射'))
+      .sort((a, b) => a.createdSeq - b.createdSeq)
+    expect(copies).toHaveLength(2)
+
+    // 每个副本中心 = 原件中心绕花心旋转 k*120 度
+    const origCenter = getCenter(s.objects.find((o) => o.name === '花瓣')!)
+    for (let k = 1; k <= 2; k++) {
+      const expected = rotPt(origCenter.x, origCenter.y, hubX, hubY, k * 120)
+      const copyCenter = getCenter(copies[k - 1])
+      expect(copyCenter.x).toBeCloseTo(expected.x, 0)
+      expect(copyCenter.y).toBeCloseTo(expected.y, 0)
+    }
+    // rotation 跟随：原件 rotation=0 → 副本 rotation=120,240
+    expect(copies[0].rotation).toBeCloseTo(120)
+    expect(copies[1].rotation).toBeCloseTo(240)
+  })
+
+  it('vpath radial，count=4，about {x,y} 坐标：3 个副本 d 坐标旋转正确', () => {
+    // 花瓣 vpath：顶点在花心正上方，三角形形状
+    const cx = 512
+    const cy = 384
+    // 简单的上方花瓣（中心约在 512,284，即花心上方 100px）
+    const petalD = 'M512 234 L540 334 L484 334 Z'
+    const s = run([
+      {
+        op: 'create',
+        shape: 'vpath',
+        name: '花瓣',
+        d: petalD,
+        fill: '#FF69B4',
+      },
+      { op: 'radial', target: { byName: '花瓣' }, about: { x: cx, y: cy }, count: 4 },
+    ])
+    const copies = s.objects
+      .filter((o) => o.name?.startsWith('花瓣-放射'))
+      .sort((a, b) => a.createdSeq - b.createdSeq)
+    expect(copies).toHaveLength(3)
+
+    // 原件 bbox 中心
+    const orig = s.objects.find((o) => o.name === '花瓣')!
+    const origCenter = getCenter(orig)
+
+    // 验证每个副本的 bbox 中心 ≈ 原件中心绕 (cx,cy) 旋转 k*90 度
+    for (let k = 1; k <= 3; k++) {
+      const expected = rotPt(origCenter.x, origCenter.y, cx, cy, k * 90)
+      const copyCenter = getCenter(copies[k - 1])
+      expect(copyCenter.x).toBeCloseTo(expected.x, 0)
+      expect(copyCenter.y).toBeCloseTo(expected.y, 0)
+    }
+  })
+
+  it('about 解析：{x,y} 和 {byName} 两种形式都能正常解析', () => {
+    // {x,y} 形式
+    const s1 = run([
+      { op: 'create', shape: 'circle', name: '点', at: { x: 400, y: 200 }, size: 10 },
+      { op: 'radial', target: { byName: '点' }, about: { x: 400, y: 300 }, count: 2 },
+    ])
+    expect(s1.objects.filter((o) => o.name?.startsWith('点'))).toHaveLength(2)
+
+    // {byName} 形式
+    const s2 = run([
+      { op: 'create', shape: 'circle', name: '中心', at: { x: 400, y: 300 }, size: 30 },
+      { op: 'create', shape: 'circle', name: '点', at: { x: 400, y: 200 }, size: 10 },
+      { op: 'radial', target: { byName: '点' }, about: { byName: '中心' }, count: 2 },
+    ])
+    expect(s2.objects.filter((o) => o.name?.startsWith('点'))).toHaveLength(2)
   })
 })
 

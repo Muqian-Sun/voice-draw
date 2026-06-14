@@ -601,6 +601,34 @@ function reflectPathD(d: string, cx: number, cy: number, vertical: boolean): str
   })
 }
 
+/** 把点 (px,py) 绕中心 (cx,cy) 旋转 deg 度（顺时针为正，与画布 y 向下一致）。 */
+function rotatePoint(px: number, py: number, cx: number, cy: number, deg: number): { x: number; y: number } {
+  const rad = (deg * Math.PI) / 180
+  const cos = Math.cos(rad)
+  const sin = Math.sin(rad)
+  const dx = px - cx
+  const dy = py - cy
+  return { x: cx + dx * cos - dy * sin, y: cy + dx * sin + dy * cos }
+}
+
+/** 旋转 vpath 的 d（绕 (cx,cy) 转 deg 度）。d 全是 M/L/C/Q/Z 绝对坐标对（无 A 弧），
+ *  按 (x,y) 成对旋转——与 reflectPathD 同假设；旋转非可分离（x' 依赖 x 和 y），故必须成对处理，
+ *  不能像 reflect/affine 那样逐坐标 replace。 */
+function rotatePathD(d: string, cx: number, cy: number, deg: number): string {
+  const rad = (deg * Math.PI) / 180
+  const cos = Math.cos(rad)
+  const sin = Math.sin(rad)
+  const vals = (d.match(/-?\d*\.?\d+/g) ?? []).map((s) => parseFloat(s))
+  for (let i = 0; i + 1 < vals.length; i += 2) {
+    const dx = vals[i] - cx
+    const dy = vals[i + 1] - cy
+    vals[i] = Math.round((cx + dx * cos - dy * sin) * 10) / 10
+    vals[i + 1] = Math.round((cy + dx * sin + dy * cos) * 10) / 10
+  }
+  let k = 0
+  return d.replace(/-?\d*\.?\d+/g, () => String(vals[k++]))
+}
+
 function execOp(state: SceneState, op: Op): OpResult {
   switch (op.op) {
     case 'create':
@@ -905,6 +933,71 @@ function execOp(state: SceneState, op: Op): OpResult {
           objects: [...state.objects, mirrored],
           focusId: id,
           seq: state.seq + 1,
+          seqByShape: { ...state.seqByShape, [o.shape]: shapeSeq },
+        },
+      }
+    }
+
+    case 'radial': {
+      // 放射复制：把 target 绕 about 中心等角复制成 count 份（含原件）→ 补 count-1 个旋转副本。
+      // target/about 为构造类引用 → preferRecent（同 mirror，多轮同名取最近创建）。
+      const t = resolveTarget(state, op.target, true)
+      if (!t.ok) return t
+      let cx: number
+      let cy: number
+      if (typeof op.about === 'object' && 'x' in op.about) {
+        cx = op.about.x
+        cy = op.about.y
+      } else {
+        const ax = resolveTarget(state, op.about as TargetSelector, true)
+        if (!ax.ok) return ax
+        const c = getCenter(ax.obj)
+        cx = c.x
+        cy = c.y
+      }
+      const o = t.obj
+      const isVpath = o.shape === 'vpath' && o.d !== undefined
+      const baseName = op.name ?? o.name ?? o.shape
+      const newObjs: SceneObject[] = []
+      let seq = state.seq
+      let shapeSeq = state.seqByShape[o.shape] ?? 0
+      let maxZ = state.objects.reduce((m, x) => Math.max(m, x.z), 0)
+      for (let k = 1; k < op.count; k++) {
+        const deg = (360 / op.count) * k
+        shapeSeq += 1
+        seq += 1
+        maxZ += 1
+        const id = `${o.shape}#${shapeSeq}`
+        let geom: Partial<SceneObject>
+        if (isVpath) {
+          geom = { d: rotatePathD(o.d as string, cx, cy, deg) }
+        } else {
+          const c = getCenter(o)
+          const p = rotatePoint(c.x, c.y, cx, cy, deg)
+          geom = {
+            x: o.x + (p.x - c.x),
+            y: o.y + (p.y - c.y),
+            rotation: (((o.rotation + deg) % 360) + 360) % 360,
+          }
+        }
+        const copy: SceneObject = {
+          ...o,
+          id,
+          name: `${baseName}-放射${k}`,
+          ...geom,
+          z: maxZ,
+          createdSeq: seq,
+        }
+        delete (copy as { groupId?: string }).groupId
+        newObjs.push(copy)
+      }
+      return {
+        ok: true,
+        state: {
+          ...state,
+          objects: [...state.objects, ...newObjs],
+          focusId: o.id, // 焦点留在原件（§5.1）
+          seq,
           seqByShape: { ...state.seqByShape, [o.shape]: shapeSeq },
         },
       }
