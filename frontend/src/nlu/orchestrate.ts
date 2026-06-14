@@ -2,16 +2,19 @@
  * 多主体 plan 编排器（按角色拆子计划设计 Phase 1 PR-2）
  *
  * orchestrateSubplans：
- *   多主体话术 → planLayout 布局 → 背景 + 逐角色子计划（各自 parseWithLlmStream plan 模式 +
- *   forwardRetry runner 逐 op 渐进应用） → 逐角色 applyAutoGroup 编组 → 返回最终场景。
+ *   多主体话术 → 背景瞬时直接画（无需 LLM）→ planLayout 布局 → 框去重叠 →
+ *   并发触发所有角色 LLM 调用（非流式）→ 串行按序应用（执行 + 编组 + fit）→ 返回最终场景。
  *
  * 单主体 / planner 失败 / 全部失败 → ok:false fallback，调用方继续走普通流式 plan。
+ *
+ * 性能优化：串行 N×~37s ≈ 数分钟 → 并发取 LLM（非流式）串行应用 ≈ 单次 ~40s；
+ *   ID 生成走串行 apply，不冲突。
  */
 import { applyAutoGroup } from '../engine/history'
-import { createForwardTolerantRunner } from '../engine/forwardRetry'
+import { executeTransaction } from '../engine/interpreter'
 import { type SceneState, getBBox } from '../engine/scene'
 import type { Op } from '../dsl'
-import { type LlmCallContext, parseWithLlmStream } from './llm'
+import { type LlmCallContext, parseWithLlm } from './llm'
 import { planLayout } from './planner'
 
 /**
@@ -152,13 +155,85 @@ export type OrchestrateResult =
   | { ok: true; scene: SceneState; subjectCount: number }
   | { ok: false; fallback: true }
 
+/** 计算 groupId===label 所有成员的并集包围盒 */
+function groupBBox(s: SceneState, label: string): { w: number; h: number } {
+  const members = s.objects.filter((o) => o.groupId === label)
+  if (members.length === 0) return { w: 0, h: 0 }
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const o of members) {
+    const [bx, by, bw, bh] = getBBox(o)
+    minX = Math.min(minX, bx); minY = Math.min(minY, by)
+    maxX = Math.max(maxX, bx + bw); maxY = Math.max(maxY, by + bh)
+  }
+  return { w: Math.max(0, maxX - minX), h: Math.max(0, maxY - minY) }
+}
+
+/**
+ * 推开相互重叠的布局框（AABB 碰撞 + 迭代松弛）。
+ * 治"七个小矮人叠在一堆"问题：planLayout 给框后做几何后处理，
+ * 无需二次 LLM 调用。
+ */
+function deoverlapBoxes(
+  subjects: Array<{ cx: number; cy: number; w: number; h: number }>,
+  W = 1024,
+  H = 768,
+): void {
+  for (let iter = 0; iter < 30; iter++) {
+    let moved = false
+    for (let i = 0; i < subjects.length; i++) {
+      for (let j = i + 1; j < subjects.length; j++) {
+        const a = subjects[i], b = subjects[j]
+        const ox = (a.w + b.w) / 2 - Math.abs(a.cx - b.cx)
+        const oy = (a.h + b.h) / 2 - Math.abs(a.cy - b.cy)
+        if (ox > 0 && oy > 0) {
+          moved = true
+          if (ox <= oy) {
+            const push = ox / 2 + 1
+            const dir = a.cx <= b.cx ? -1 : 1
+            a.cx += dir * push; b.cx -= dir * push
+          } else {
+            const push = oy / 2 + 1
+            const dir = a.cy <= b.cy ? -1 : 1
+            a.cy += dir * push; b.cy -= dir * push
+          }
+        }
+      }
+    }
+    if (!moved) break
+  }
+  // 夹回画布范围
+  for (const s of subjects) {
+    s.cx = Math.min(Math.max(s.cx, s.w / 2), W - s.w / 2)
+    s.cy = Math.min(Math.max(s.cy, s.h / 2), H - s.h / 2)
+  }
+}
+
 export async function orchestrateSubplans(
   utterance: string,
   baseScene: SceneState,
   ctx: LlmCallContext,
   cb: OrchestrateCallbacks,
 ): Promise<OrchestrateResult> {
-  // Step 1: 布局规划
+  // 闭包状态
+  let scene = baseScene
+  let painted = 0
+  let firstPaint = false
+
+  // Step 1: 背景瞬时直接画（用话术关键词，不走 LLM，在 planLayout 前先出图）
+  // 这样首帧背景出现在 planLayout 的 ~5s 等待之前。
+  const bgOps = backgroundOps(utterance)
+  if (bgOps.length > 0) {
+    const before = scene
+    const ex = executeTransaction(scene, bgOps)
+    if (ex.state !== before) {
+      scene = applyAutoGroup(before, ex.state, '背景')
+      if (!firstPaint) { firstPaint = true; cb.onFirstPaint?.() }
+      cb.onScene(scene)
+      cb.onLog('▸ 背景已铺（天空/地面）')
+    }
+  }
+
+  // Step 2: 布局规划（与背景绘制无关，串行等待规划结果）
   cb.onLog('正在规划构图…')
   const lay = await planLayout(utterance, { ...ctx, scene: baseScene })
   if (!lay.ok || lay.layout.subjects.length <= 1) {
@@ -166,60 +241,18 @@ export async function orchestrateSubplans(
     return { ok: false, fallback: true }
   }
 
-  const { background, style, subjects } = lay.layout
-  cb.onLog(`布局：${subjects.length} 个主体，开始逐角色绘制…`)
+  // subjects 是 zod .parse 生成的普通对象（非 frozen），可直接修改
+  const { style, subjects } = lay.layout
+  cb.onLog(`布局：${subjects.length} 个主体，去重叠后并行请求 LLM…`)
 
-  // 闭包状态
-  let scene = baseScene
-  let painted = 0
-  let firstPaint = false
+  // Step 3: 框去重叠（AABB 迭代推开，治多矮人重叠）
+  deoverlapBoxes(subjects)
 
-  // 内部 draw 函数（串行调用，共享闭包 scene）
-  // 角色在画布中心放开画大（prompt 不约束位置/尺寸），finish 后 fitGroupToBox 缩放平移到目标框，
-  // 最后一次性 onScene（避免"画中心闪一下又飞到角落"的视觉抖动）。
-  const draw = async (
-    prompt: string,
-    label: string,
-    box: { cx: number; cy: number; w: number; h: number },
-  ): Promise<void> => {
-    const before = scene
-    const runner = createForwardTolerantRunner(scene, (op: Op, state: SceneState) => {
-      painted++
-      scene = state
-      // 不在此 onScene：角色在画布中心隐形画好，fit 到框后再一次性渲染
-      if (op.op === 'create' && op.desc !== undefined) cb.onLog(`▸ ${op.desc}`)
-    })
-    try {
-      await parseWithLlmStream(prompt, 'plan', { ...ctx, scene: before }, (op) => runner.push(op))
-    } catch (e) {
-      cb.onLog(`「${label}」流式异常，保留已画部分`)
-    }
-    scene = runner.finish().state
-    if (scene === before) { cb.onLog(`「${label}」未画成，跳过`); return }
-    scene = applyAutoGroup(before, scene, label)
-    scene = fitGroupToBox(scene, label, box)   // 等比仿射缩放平移到目标框（不溢出）
-    if (!firstPaint) { firstPaint = true; cb.onFirstPaint?.() }
-    cb.onScene(scene)                           // 一次性渲染（已贴好框）
-  }
-
-  // Step 2: 背景瞬时直接画（不走 LLM 子计划）：渐变天地铺满，让首个角色紧跟 planner 就开始
-  if (background !== undefined) {
-    const before = scene
-    const runner = createForwardTolerantRunner(scene, (op: Op, state: SceneState) => {
-      painted++
-      if (!firstPaint) { firstPaint = true; cb.onFirstPaint?.() }
-      scene = state
-      cb.onScene(state)
-      if (op.op === 'create' && op.desc !== undefined) cb.onLog(`▸ ${op.desc}`)
-    })
-    for (const op of backgroundOps(background)) runner.push(op)
-    scene = runner.finish().state
-    if (scene !== before) scene = applyAutoGroup(before, scene, '背景')
-    cb.onScene(scene)
-  }
-
-  // Step 3: 逐角色串行绘制
-  for (const s of subjects) {
+  // Step 4: 并发触发所有角色的 LLM 调用（非流式 parseWithLlm）
+  // 以 planLayout 后的 scene（含背景）为共享上下文基线；所有角色同时请求，
+  // LLM 耗时从 N×串行 变成 max(各角色) 并行。
+  const bgScene = scene  // 背景已应用后的基准，供所有子计划共享读取
+  const pending = subjects.map(async (s) => {
     // 子计划话术：只给编排框架（单主体、画大、画全、居中供缩放贴框）；
     // 外观/结构/比例/部件细节全交给 SYSTEM_PROMPT + LLM 自身知识，不在此写死。
     const prompt =
@@ -228,10 +261,48 @@ export async function orchestrateSubplans(
       `整体画大、居中于画布中心 (512,384)（不用管它最终摆在哪、多大，我会自动缩放摆放进画面）` +
       (style !== undefined ? `，画风：${style}` : '') +
       `。`
-    await draw(prompt, s.label, { cx: s.cx, cy: s.cy, w: s.w, h: s.h })
+    try {
+      const res = await parseWithLlm(prompt, 'plan', { ...ctx, scene: bgScene })
+      return { s, ops: res.ok ? res.result.ops : [] as Op[] }
+    } catch {
+      return { s, ops: [] as Op[] }
+    }
+  })
+
+  // Step 5: 串行按序应用（保证 ID 自增不冲突，渐进 onScene）
+  for (const p of pending) {
+    const { s, ops } = await p
+    if (ops.length === 0) {
+      cb.onLog(`「${s.label}」未画成，跳过`)
+      continue
+    }
+    const before = scene
+    const ex = executeTransaction(scene, ops)
+    if (ex.state === before) {
+      cb.onLog(`「${s.label}」未画成，跳过`)
+      continue
+    }
+    let s2 = applyAutoGroup(before, ex.state, s.label)
+
+    // fit 前后记录 bbox 日志（诊断"矮人偏大/框太小"等问题）
+    const pre = groupBBox(s2, s.label)
+    s2 = fitGroupToBox(s2, s.label, { cx: s.cx, cy: s.cy, w: s.w, h: s.h })
+    const post = groupBBox(s2, s.label)
+    const overflow = post.w > s.w + 8 || post.h > s.h + 8
+    cb.onLog(
+      `▸ ${s.label}: 画${ops.length}笔 框${Math.round(s.w)}×${Math.round(s.h)}` +
+      ` → 原bbox ${Math.round(pre.w)}×${Math.round(pre.h)}` +
+      ` → 贴框后 ${Math.round(post.w)}×${Math.round(post.h)}` +
+      (overflow ? ' ⚠超框' : ''),
+    )
+
+    scene = s2
+    painted++
+    if (!firstPaint) { firstPaint = true; cb.onFirstPaint?.() }
+    cb.onScene(scene)
   }
 
-  // Step 4: 全部失败时回退
+  // Step 6: 全部失败时回退
   if (painted === 0) {
     cb.onLog('一件都没画成→退回普通 plan')
     return { ok: false, fallback: true }
