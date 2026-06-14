@@ -457,16 +457,33 @@ function execCreate(state: SceneState, op: CreateOp): OpResult {
 
 // v2.0 vpath：贝塞尔矢量路径。d 为画布系绝对坐标，(x,y) 作平移偏移（缺省 0）；
 // 不走 size/几何/clamp 逻辑（与图元根本不同），直接建命名场景对象。
+// v2.1 支持 op.at 相对定位：用 d 自然 bbox 求中心/宽高，resolvePosition 给目标中心，
+// 平移位 = 目标中心 - 自然中心（无 at 时维持 x:0,y:0 向后兼容）。不走 clamp。
 function execCreateVpath(state: SceneState, op: CreateOp): OpResult {
   const shapeSeq = (state.seqByShape.vpath ?? 0) + 1
   const id = `vpath#${shapeSeq}`
   const maxZ = state.objects.reduce((m, o) => Math.max(m, o.z), 0)
+
+  let x = 0
+  let y = 0
+  if (op.at !== undefined) {
+    // vpath 也支持相对定位：用 d 自然 bbox 求中心/宽高，resolvePosition 给目标中心，平移位 = 目标 - 自然中心
+    const probe = { id, shape: 'vpath', x: 0, y: 0, rotation: 0, z: 0, createdSeq: 0, d: op.d } as SceneObject
+    const [bx, by, bw, bh] = getBBox(probe)
+    const center = { x: bx + bw / 2, y: by + bh / 2 }
+    const focus = state.focusId ? state.objects.find((o) => o.id === state.focusId) : undefined
+    const placed = resolvePosition(state, op.at, bw, bh, focus, undefined)
+    if (!placed.ok) return placed // 前向引用/目标不存在 → 原样返回错误（forwardRetry 会暂存重试）
+    x = placed.point.x - center.x
+    y = placed.point.y - center.y
+  }
+
   const obj: SceneObject = {
     id,
     ...(op.name ? { name: op.name } : {}),
     shape: 'vpath',
-    x: 0,
-    y: 0,
+    x,
+    y,
     d: op.d,
     ...(op.gradient ? { gradient: op.gradient } : op.fill ? { fill: op.fill } : {}),
     ...(op.stroke ? { stroke: op.stroke } : {}),

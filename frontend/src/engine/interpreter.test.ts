@@ -739,3 +739,56 @@ describe('多轮 append：构造类引用 byName 命中多个取最近（修 app
     expect(r.error?.code).toBe('AMBIGUOUS_TARGET')
   })
 })
+
+describe('vpath at 相对定位（v2.1）', () => {
+  // 父件：50×50 正方形路径，bbox 中心 (225, 225)，底部 y=250
+  const SLEEVE_D = 'M200 200 L250 200 L250 250 L200 250 Z'
+  // 子件：20×20 小方块，自然 bbox 中心 (410, 410)
+  const HAND_D = 'M400 400 L420 400 L420 420 L400 420 Z'
+
+  it('vpath + at 相对定位：子件中心应落在父件底部附近（onEdge 外贴）', () => {
+    const s = run([
+      { op: 'create', shape: 'vpath', name: '袖', d: SLEEVE_D, fill: '#AAAAAA' },
+      {
+        op: 'create',
+        shape: 'vpath',
+        name: '手',
+        d: HAND_D,
+        fill: '#FFD700',
+        at: { ref: { byName: '袖' }, anchor: 'bottom', onEdge: true },
+      },
+    ])
+    const sleeve = s.objects.find((o) => o.name === '袖')!
+    const hand = s.objects.find((o) => o.name === '手')!
+    // x,y 非 0（相对定位已生效）
+    expect(hand.x !== 0 || hand.y !== 0).toBe(true)
+    // 手的 bbox 中心 y > 袖的 bbox 中心 y（手在袖子下方）
+    const sleeveBBox = getBBox(sleeve)
+    const handBBox = getBBox(hand)
+    const sleeveCY = sleeveBBox[1] + sleeveBBox[3] / 2
+    const handCY = handBBox[1] + handBBox[3] / 2
+    expect(handCY).toBeGreaterThan(sleeveCY)
+  })
+
+  it('vpath 无 at → x===0 && y===0（向后兼容）', () => {
+    const s = run([{ op: 'create', shape: 'vpath', name: '形', d: SLEEVE_D, fill: '#AAAAAA' }])
+    const o = s.objects[0]
+    expect(o.x).toBe(0)
+    expect(o.y).toBe(0)
+  })
+
+  it('vpath at 引用不存在目标 → op 失败（TARGET_NOT_FOUND），不崩', () => {
+    const r = executeTransaction(createEmptyScene(), [
+      {
+        op: 'create',
+        shape: 'vpath',
+        name: '手',
+        d: HAND_D,
+        fill: '#FFD700',
+        at: { ref: { byName: '不存在的袖子' }, anchor: 'bottom' },
+      },
+    ])
+    expect(r.error?.code).toBe('TARGET_NOT_FOUND')
+    expect(r.state.objects).toHaveLength(0) // 未建出对象
+  })
+})
