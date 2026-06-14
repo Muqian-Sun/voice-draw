@@ -57,6 +57,9 @@ export const HOMOPHONE_TABLE: readonly CorrectionEntry[] = [
   { from: '轻空', to: '清空' },
   { from: '亲空', to: '清空' },
   { from: '报存', to: '保存' },
+  { from: '倒出', to: '导出' },
+  { from: '到出', to: '导出' },
+  { from: '撤宵', to: '撤销' },
   // 图形类
   { from: '园形', to: '圆形' },
   { from: '原形', to: '圆形' },

@@ -1,24 +1,23 @@
 /**
- * 规则快路径：T1~T11 模板解析（规格 §4）
+ * 规则快路径（瘦身版）：仅系统指令 + LLM 路由助手
  *
- * 流程（§4.1）：纠错后文本 → 剔除忽略词 → 最长匹配分词 + 槽位标注
- *   → 按 T1~T11 依序尝试 → 命中且未消费字符占比 ≤30% → ParseResult{source:"rule"}
- *   → 否则 null（路由器升级 LLM，mode 由 decideMode 判定，§4.3）
+ * 设计变更（refactor：去绘图规则模板）：绘图/编辑类口语（创建/移动/缩放/改色/删除/旋转/
+ * 命名/选中）**不再走规则模板**，一律升 LLM（边生成边画、看画的过程）。本层只保留
+ * **LLM 无法产出、必须本地处理**的系统指令：撤销/重做（T6）、清空（T7，confirm-pending）、
+ * 保存图片（T10）。识别仍走「纠错（correction.ts）→ 词表同义词（VERB_WORDS）→ 分词」三道防线。
  *
- * 输出与 LLM 同构（协议 §2.5 ParseResult）；clear 只在此层产生（intent=confirm-pending）。
+ * 另保留 decideMode（parse/plan 路由判定，§4.3）与 extractPlanSubject（plan 自动编组组名，§5.1），
+ * 二者依赖 tokenize；故分词机器（VOCAB/tokenize/Consumption）整体保留。
  */
-import type { Anchor, CreateOp, Op, SizeSpec, TargetSelector } from '../dsl'
+import type { Anchor, Op, SizeSpec } from '../dsl'
 import {
   ANCHOR_WORDS,
   COLOR_WORDS,
-  DEFAULT_MOVE_DELTA,
   DIRECTION_VECTORS,
   FOCUS_DEIXIS_WORDS,
   IGNORE_WORDS,
   MOVE_DELTA_WORDS,
   ORDINAL_SPECIAL_WORDS,
-  SCALE_WORDS,
-  SEMANTIC_SIZE,
   SEMANTIC_SIZE_WORDS,
   SHAPE_ALIASES,
   VERB_WORDS,
@@ -40,9 +39,9 @@ export interface RuleParseResult {
 }
 
 export interface RuleContext {
-  /** 场景中已命名对象（byName 热匹配） */
+  /** 场景中已命名对象（byName 热匹配；分词期名称优先） */
   names?: readonly string[]
-  /** 当前是否有焦点对象（目标缺失时回退 byFocus 的前提） */
+  /** 当前是否有焦点对象（保留给路由上下文，系统指令不依赖） */
   hasFocus?: boolean
 }
 
@@ -69,11 +68,7 @@ type Token =
   | { kind: 'punct'; text: string }
   | { kind: 'unknown'; text: string }
 
-type ColorToken = Extract<Token, { kind: 'color' }>
-type ShapeToken = Extract<Token, { kind: 'shape' }>
-type AnchorToken = Extract<Token, { kind: 'anchor' }>
 type NumberToken = Extract<Token, { kind: 'number' }>
-type SizeToken = Extract<Token, { kind: 'size' }>
 
 /** 词表 → 统一词典（同词多义时先注册者优先） */
 type VocabEntry = (text: string) => Token
@@ -83,8 +78,7 @@ function addVocab(word: string, make: VocabEntry) {
   if (!VOCAB.has(word)) VOCAB.set(word, make)
 }
 
-// 注意 SCALE_WORDS 不进词典——"变大很多"在左起贪心下会切成 变大+很多，
-// T3 改用全句最长子串扫描（见 scanScale）。
+// 词典覆盖全部词表，保证 tokenize 行为不变（decideMode 依赖形状/未知段的准确切分）。
 for (const [w, v] of Object.entries(ORDINAL_SPECIAL_WORDS)) addVocab(w, (t) => ({ kind: 'ordinal', text: t, value: v }))
 for (const w of FOCUS_DEIXIS_WORDS) addVocab(w, (t) => ({ kind: 'deixis', text: t }))
 for (const [group, words] of Object.entries(VERB_WORDS) as [VerbIntent, readonly string[]][])
@@ -105,7 +99,7 @@ const MAX_VOCAB_LEN = Math.max(...[...VOCAB.keys()].map((w) => w.length))
 
 const NUM_RUN_RE = /^([0-9]+(?:\.[0-9]+)?|[零一二两三四五六七八九十百千万]+)/
 const ORDINAL_RE = /^第([零一二两三四五六七八九十百千万0-9]+)个?/
-const QUOTE_RE = /^[「“"'『]([^「」“”"'『』]+)[」”"'』]/
+const QUOTE_RE = /^[「“"'『]([^「」“”"'『』]+)[」”"'『』]/
 const PUNCT_RE = /^[\s，。、,.!?！？;；:：]+/
 
 export function tokenize(text: string, names: readonly string[] = []): Token[] {
@@ -176,9 +170,6 @@ class Consumption {
   take(idx: number) {
     this.used[idx] = true
   }
-  isUsed(idx: number): boolean {
-    return this.used[idx]
-  }
   /** 消费所有指定 kind 的 token（结构虚词等） */
   takeKinds(...kinds: Token['kind'][]) {
     this.tokens.forEach((t, i) => {
@@ -197,91 +188,7 @@ class Consumption {
   }
 }
 
-// ---------- 目标槽位统一解析（§4.2，T2~T5、T8、T11 共用） ----------
-
-interface TargetMatch {
-  selector: TargetSelector
-  /** 消费的 token 下标 */
-  idxs: number[]
-}
-
-/**
- * 优先级：已命名对象 → [颜色?][序数?][形状] byQuery → 序数单独成分 → 指代词 byFocus。
- * 指代词紧跟查询成分时作限定词消费（"那个红色的圆""刚才那个圆"），单独出现才是 byFocus。
- * mask：调用方排除的下标（如 T1 中被创建的形状本体）。
- */
-function findTarget(tokens: Token[], mask: ReadonlySet<number> = new Set()): TargetMatch | null {
-  const visible = (i: number) => !mask.has(i)
-
-  const nameIdx = tokens.findIndex((t, i) => t.kind === 'name' && visible(i))
-  if (nameIdx >= 0) return { selector: { byName: tokens[nameIdx].text }, idxs: [nameIdx] }
-
-  const shapeIdx = tokens.findIndex((t, i) => t.kind === 'shape' && visible(i))
-  if (shapeIdx >= 0) {
-    const idxs = [shapeIdx]
-    const q: { shape?: ShapeAlias['kind']; fill?: string; ordinal?: number | 'first' | 'last' } = {
-      shape: (tokens[shapeIdx] as ShapeToken).alias.kind,
-    }
-    for (let i = shapeIdx - 1; i >= 0; i--) {
-      const t = tokens[i]
-      if (!visible(i)) break
-      if (t.kind === 'func' && t.text === '的') {
-        idxs.push(i)
-      } else if (t.kind === 'color' && q.fill === undefined) {
-        q.fill = t.hex
-        idxs.push(i)
-      } else if (t.kind === 'ordinal' && q.ordinal === undefined) {
-        q.ordinal = t.value
-        idxs.push(i)
-      } else if (t.kind === 'deixis') {
-        idxs.push(i) // 紧跟查询成分的指代词一律作限定词（那个/这个/刚才那个/刚画的 + 形状）
-      } else {
-        break
-      }
-    }
-    return { selector: { byQuery: q }, idxs }
-  }
-
-  const ordIdx = tokens.findIndex((t, i) => t.kind === 'ordinal' && visible(i))
-  if (ordIdx >= 0) {
-    const value = (tokens[ordIdx] as Extract<Token, { kind: 'ordinal' }>).value
-    return { selector: { byQuery: { ordinal: value } }, idxs: [ordIdx] }
-  }
-
-  const deixisIdx = tokens.findIndex((t, i) => t.kind === 'deixis' && visible(i))
-  if (deixisIdx >= 0) return { selector: { byFocus: true }, idxs: [deixisIdx] }
-
-  return null
-}
-
-const NO_FOCUS_SAY = '请先告诉我要操作哪个图形'
-
-/**
- * 目标槽位解析（§4.2）。三种结局：
- * - ok：解析出选择器
- * - escalate：出现了未解析的内容名词（如"头""耳朵"——可能是某个部件，但规则不认得它的全名），
- *   **不要**回退 byFocus（在分组场景下会误伤整组），交给 LLM 用 scene.groups 精确映射
- * - no-focus：目标完全缺失（"变大一点"）且无焦点 → clarify（信息缺失，LLM 也解决不了）
- */
-type TargetOutcome =
-  | { ok: true; selector: TargetSelector }
-  | { ok: false; reason: 'escalate' | 'no-focus' }
-
-function targetOrFocus(tokens: Token[], cons: Consumption, ctx: RuleContext, limit?: number): TargetOutcome {
-  const scope = limit === undefined ? tokens : tokens.slice(0, limit) // 前缀切片下标与原数组一致
-  const m = findTarget(scope)
-  if (m) {
-    m.idxs.forEach((i) => cons.take(i))
-    return { ok: true, selector: m.selector }
-  }
-  // 目标槽位出现未消费的未知内容词（用户点名了某个东西，但规则不认得）→ 升级 LLM 而非 byFocus
-  const hasUnresolvedNoun = scope.some((t, i) => t.kind === 'unknown' && !cons.isUsed(i) && /[一-鿿]/.test(t.text))
-  if (hasUnresolvedNoun) return { ok: false, reason: 'escalate' }
-  if (ctx.hasFocus) return { ok: true, selector: { byFocus: true } }
-  return { ok: false, reason: 'no-focus' }
-}
-
-// ---------- 模板匹配 ----------
+// ---------- 系统指令模板（T6/T7/T10，LLM 无法产出 → 本地识别） ----------
 
 interface TemplateHit {
   intent: RuleParseResult['intent']
@@ -290,220 +197,10 @@ interface TemplateHit {
   template: string
 }
 
-type TemplateOutcome = TemplateHit | null | 'clarify-no-focus'
-type Template = (text: string, tokens: Token[], cons: Consumption, ctx: RuleContext) => TemplateOutcome
+type Template = (text: string, tokens: Token[], cons: Consumption, ctx: RuleContext) => TemplateHit | null
 
 const verbAt = (tokens: Token[], intent: VerbIntent) =>
   tokens.findIndex((t) => t.kind === 'verb' && t.intent === intent)
-
-/** T1 创建：动词 + 位置? + 尺寸? + 颜色? + 形状 + 内容?（text 用） */
-const tCreate: Template = (text, tokens, cons) => {
-  const verbIdx = verbAt(tokens, 'create')
-  if (verbIdx < 0) return null
-  const verb = tokens[verbIdx] as Extract<Token, { kind: 'verb' }>
-  cons.take(verbIdx)
-  cons.takeKinds('func')
-
-  // text 形状之一："写…"引导（§4.2 T1 细则），写之后整段是内容
-  if (verb.text === '写') {
-    const after = text.slice(text.indexOf('写') + 1).replace(/^上|^着/, '')
-    const quoted = after.match(/[「“"'『]([^「」“”"'『』]+)[」”"'』]/)
-    const content = (quoted ? quoted[1] : after).replace(/[\s，。、,.!?！？]+$/, '').trim()
-    if (content.length === 0) return null
-    tokens.forEach((_, i) => i > verbIdx && cons.take(i))
-    const anchorIdx = tokens.findIndex((t, i) => t.kind === 'anchor' && i < verbIdx)
-    const op: CreateOp = { op: 'create', shape: 'text', text: content }
-    if (anchorIdx >= 0) {
-      cons.take(anchorIdx)
-      op.at = { ref: 'canvas', anchor: (tokens[anchorIdx] as AnchorToken).anchor }
-    }
-    return { intent: 'ops', ops: [op], say: `写好了：${content}`, template: 'T1' }
-  }
-
-  // 被创建形状：优先动词之后的形状 token（"在圆的右边画个方块"里 ref 在动词前）
-  let shapeIdx = tokens.findIndex((t, i) => t.kind === 'shape' && i > verbIdx)
-  if (shapeIdx < 0) shapeIdx = tokens.findIndex((t) => t.kind === 'shape')
-  if (shapeIdx < 0) return null
-  const alias = (tokens[shapeIdx] as ShapeToken).alias
-  cons.take(shapeIdx)
-
-  // text 形状之二：形状别名（字/文字/文本）+ 引号内容；无内容不命中（T1 细则）
-  let textContent: string | undefined
-  if (alias.kind === 'text') {
-    const qIdx = tokens.findIndex((t) => t.kind === 'quoted')
-    if (qIdx < 0) return null
-    textContent = (tokens[qIdx] as Extract<Token, { kind: 'quoted' }>).content
-    cons.take(qIdx)
-  }
-
-  // 位置：方位词 → ref=canvas；anchor 左侧存在目标成分 → "在 X 的 D"（ref=对象）
-  let at: CreateOp['at']
-  const anchorIdx = tokens.findIndex((t) => t.kind === 'anchor')
-  if (anchorIdx >= 0) {
-    cons.take(anchorIdx)
-    const anchor = (tokens[anchorIdx] as AnchorToken).anchor
-    const ref = findTarget(tokens.slice(0, anchorIdx), new Set([shapeIdx]))
-    if (ref) {
-      ref.idxs.forEach((i) => cons.take(i))
-      at = { ref: ref.selector, anchor }
-    } else {
-      at = { ref: 'canvas', anchor }
-    }
-  }
-
-  // 数量："画两个圆"展开 N 个 create（上限 5，超出升级 LLM）
-  let count = 1
-  const numIdx = tokens.findIndex((t, i) => t.kind === 'number' && i < shapeIdx && !cons.isUsed(i))
-  if (numIdx >= 0) {
-    const n = (tokens[numIdx] as NumberToken).value
-    if (!Number.isInteger(n) || n < 1) return null
-    if (n > 5) return null
-    count = n
-    cons.take(numIdx)
-  }
-
-  // 颜色 / 尺寸（跳过已被 ref 消费的）
-  const colorIdx = tokens.findIndex((t, i) => t.kind === 'color' && !cons.isUsed(i))
-  if (colorIdx >= 0) cons.take(colorIdx)
-  const sizeIdx = tokens.findIndex((t, i) => t.kind === 'size' && !cons.isUsed(i))
-  if (sizeIdx >= 0) cons.take(sizeIdx)
-  const size: SizeSpec | undefined = sizeIdx >= 0 ? (tokens[sizeIdx] as SizeToken).spec : undefined
-
-  const base: CreateOp = { op: 'create', shape: alias.kind }
-  if (colorIdx >= 0) base.fill = (tokens[colorIdx] as ColorToken).hex
-  if (at !== undefined) base.at = at
-  if (textContent !== undefined) base.text = textContent
-  // variant 几何（规格 §2.2/§2.4）：正方形 边=2v 显式产出 width=height；竖线 rotation=90
-  if (alias.variant === 'square') {
-    const v = typeof size === 'string' ? SEMANTIC_SIZE[size] : typeof size === 'number' ? size : SEMANTIC_SIZE.medium
-    base.width = 2 * v
-    base.height = 2 * v
-  } else if (size !== undefined) {
-    base.size = size
-  }
-  if (alias.variant === 'vertical') base.rotation = 90
-
-  const ops: Op[] = Array.from({ length: count }, () => ({ ...base }))
-  const colorName = colorIdx >= 0 ? tokens[colorIdx].text : ''
-  const say = count > 1 ? `画了 ${count} 个${colorName}${tokens[shapeIdx].text}` : `画了一个${colorName}${tokens[shapeIdx].text}`
-  return { intent: 'ops', ops, say, template: 'T1' }
-}
-
-/** T2 移动：目标? + 动词(移/挪/移动/拖) + 方向 + 量词?（方向×量词，缺省 60） */
-const tMove: Template = (_text, tokens, cons, ctx) => {
-  const verbIdx = verbAt(tokens, 'move')
-  if (verbIdx < 0) return null
-
-  // 方向：上/下/左/右 单字；或 往/向/朝 引导的纯边方位词（"往右边移"）。
-  // "移到右边"不算方向（语义是移动到位置，规则层不猜，留给 LLM）。
-  const SIDE_VEC: Partial<Record<Anchor, [number, number]>> = {
-    top: [0, -1],
-    bottom: [0, 1],
-    left: [-1, 0],
-    right: [1, 0],
-  }
-  let vec: [number, number] | undefined
-  let dirIdx = tokens.findIndex((t) => t.kind === 'direction')
-  if (dirIdx >= 0) {
-    vec = (tokens[dirIdx] as Extract<Token, { kind: 'direction' }>).vec
-  } else {
-    dirIdx = tokens.findIndex(
-      (t, i) =>
-        t.kind === 'anchor' &&
-        SIDE_VEC[(t as AnchorToken).anchor] !== undefined &&
-        i > 0 &&
-        tokens[i - 1].kind === 'func' &&
-        ['往', '向', '朝'].includes(tokens[i - 1].text),
-    )
-    if (dirIdx >= 0) vec = SIDE_VEC[(tokens[dirIdx] as AnchorToken).anchor]
-  }
-  if (vec === undefined) return null
-  cons.take(verbIdx)
-  cons.take(dirIdx)
-  cons.takeKinds('func')
-
-  let px = DEFAULT_MOVE_DELTA
-  const qtyIdx = tokens.findIndex((t) => t.kind === 'qty-move')
-  if (qtyIdx >= 0) {
-    px = (tokens[qtyIdx] as Extract<Token, { kind: 'qty-move' }>).px
-    cons.take(qtyIdx)
-  } else {
-    const numIdx = tokens.findIndex((t) => t.kind === 'number')
-    if (numIdx >= 0) {
-      px = (tokens[numIdx] as NumberToken).value
-      cons.take(numIdx)
-    }
-  }
-
-  const target = targetOrFocus(tokens, cons, ctx)
-  if (!target.ok) return target.reason === 'escalate' ? null : 'clarify-no-focus'
-  return {
-    intent: 'ops',
-    ops: [{ op: 'move', target: target.selector, delta: [vec[0] * px, vec[1] * px] }],
-    say: '移好了',
-    template: 'T2',
-  }
-}
-
-/** T3 缩放：目标? + 缩放话术。话术取全句最长子串（左起贪心会把"变大很多"切成 变大+很多） */
-function scanScale(text: string): { phrase: string; factor: number } | null {
-  let best: { phrase: string; factor: number } | null = null
-  for (const [phrase, factor] of Object.entries(SCALE_WORDS)) {
-    if (text.includes(phrase) && (best === null || phrase.length > best.phrase.length)) {
-      best = { phrase, factor }
-    }
-  }
-  return best
-}
-
-const tResize: Template = (text, tokens, cons, ctx) => {
-  const scale = scanScale(text)
-  if (scale === null) return null
-  // 消费缩放短语覆盖的 token：resize 动词、尺寸/量词、短语内的数字与未知字（"一半"的"半"）
-  cons.takeKinds('func', 'qty-move', 'size')
-  tokens.forEach((t, i) => {
-    if (t.kind === 'verb' && t.intent === 'resize') cons.take(i)
-    if ((t.kind === 'number' || t.kind === 'unknown') && scale.phrase.includes(t.text)) cons.take(i)
-  })
-  const target = targetOrFocus(tokens, cons, ctx)
-  if (!target.ok) return target.reason === 'escalate' ? null : 'clarify-no-focus'
-  return {
-    intent: 'ops',
-    ops: [{ op: 'resize', target: target.selector, scale: scale.factor }],
-    say: scale.factor > 1 ? '变大了' : '变小了',
-    template: 'T3',
-  }
-}
-
-/** T4 改色：目标? + (涂成/变成/改成/换成/涂) + 颜色（目标在动词左侧） */
-const tStyle: Template = (_text, tokens, cons, ctx) => {
-  const verbIdx = verbAt(tokens, 'style')
-  if (verbIdx < 0) return null
-  const colorIdx = tokens.findIndex((t, i) => t.kind === 'color' && i > verbIdx)
-  if (colorIdx < 0) return null
-  cons.take(verbIdx)
-  cons.take(colorIdx)
-  cons.takeKinds('func')
-  const target = targetOrFocus(tokens, cons, ctx, verbIdx)
-  if (!target.ok) return target.reason === 'escalate' ? null : 'clarify-no-focus'
-  return {
-    intent: 'ops',
-    ops: [{ op: 'style', target: target.selector, fill: (tokens[colorIdx] as ColorToken).hex }],
-    say: `涂成${tokens[colorIdx].text}了`,
-    template: 'T4',
-  }
-}
-
-/** T5 删除：目标 + (删掉/删除/去掉/移除/擦掉)。"全部删掉"整词属 clear，分词期已截获 */
-const tDelete: Template = (_text, tokens, cons, ctx) => {
-  const verbIdx = verbAt(tokens, 'delete')
-  if (verbIdx < 0) return null
-  cons.take(verbIdx)
-  cons.takeKinds('func')
-  const target = targetOrFocus(tokens, cons, ctx)
-  if (!target.ok) return target.reason === 'escalate' ? null : 'clarify-no-focus'
-  return { intent: 'ops', ops: [{ op: 'delete', target: target.selector }], say: '删掉了', template: 'T5' }
-}
 
 /** T6 撤销/重做：动词 + N 步? */
 const tUndoRedo: Template = (_text, tokens, cons) => {
@@ -535,45 +232,6 @@ const tClear: Template = (_text, tokens, cons) => {
   return { intent: 'confirm-pending', ops: [{ op: 'clear' }], say: '确定要清空画布吗？', template: 'T7' }
 }
 
-/** T8 旋转：目标? + (转/旋转) + N 度 + 顺/逆时针?（逆=负） */
-const tRotate: Template = (_text, tokens, cons, ctx) => {
-  const verbIdx = verbAt(tokens, 'rotate')
-  if (verbIdx < 0) return null
-  const numIdx = tokens.findIndex((t) => t.kind === 'number')
-  if (numIdx < 0) return null
-  cons.take(verbIdx)
-  cons.take(numIdx)
-  cons.takeKinds('func')
-  let sign: 1 | -1 = 1
-  const rotIdx = tokens.findIndex((t) => t.kind === 'rotdir')
-  if (rotIdx >= 0) {
-    sign = (tokens[rotIdx] as Extract<Token, { kind: 'rotdir' }>).sign
-    cons.take(rotIdx)
-  }
-  const target = targetOrFocus(tokens, cons, ctx)
-  if (!target.ok) return target.reason === 'escalate' ? null : 'clarify-no-focus'
-  const degrees = sign * (tokens[numIdx] as NumberToken).value
-  return { intent: 'ops', ops: [{ op: 'rotate', target: target.selector, degrees }], say: '转好了', template: 'T8' }
-}
-
-/** T9 命名：(这个/它)? + 叫/命名为 + 名称（目标=焦点） */
-const tRename: Template = (text, tokens, cons, ctx) => {
-  const verbIdx = verbAt(tokens, 'rename')
-  if (verbIdx < 0) return null
-  if (!ctx.hasFocus) return 'clarify-no-focus'
-  const verb = tokens[verbIdx] as Extract<Token, { kind: 'verb' }>
-  const pos = text.indexOf(verb.text)
-  if (pos < 0) return null
-  const name = text
-    .slice(pos + verb.text.length)
-    .replace(/[\s，。、,.!?！？]+/g, '')
-    .trim()
-  if (name.length === 0 || name.length > 12) return null
-  cons.takeKinds('deixis')
-  tokens.forEach((_, i) => i >= verbIdx && cons.take(i))
-  return { intent: 'ops', ops: [{ op: 'rename', target: { byFocus: true }, name }], say: `好，它叫${name}`, template: 'T9' }
-}
-
 /** T10 导出：保存/导出/下载 + 图片? */
 const tExport: Template = (_text, tokens, cons) => {
   const verbIdx = verbAt(tokens, 'export')
@@ -583,22 +241,14 @@ const tExport: Template = (_text, tokens, cons) => {
   return { intent: 'ops', ops: [{ op: 'export', format: 'png' }], say: '已保存图片', template: 'T10' }
 }
 
-/** T11 选中：选中/选择 + 目标 */
-const tFocus: Template = (_text, tokens, cons, ctx) => {
-  const verbIdx = verbAt(tokens, 'focus')
-  if (verbIdx < 0) return null
-  cons.take(verbIdx)
-  cons.takeKinds('func')
-  const m = findTarget(tokens)
-  if (!m) return ctx.hasFocus ? null : 'clarify-no-focus'
-  m.idxs.forEach((i) => cons.take(i))
-  return { intent: 'ops', ops: [{ op: 'focus', target: m.selector }], say: '选中了', template: 'T11' }
-}
-
-const TEMPLATES: Template[] = [tCreate, tMove, tResize, tStyle, tDelete, tUndoRedo, tClear, tRotate, tRename, tExport, tFocus]
+const TEMPLATES: Template[] = [tUndoRedo, tClear, tExport]
 
 // ---------- 入口 ----------
 
+/**
+ * 系统指令本地解析：命中撤销/重做/清空/保存 → 直接产出 Op；其余（绘图/编辑）一律返回
+ * null，由路由器升 LLM。命中后仍做"未消费占比 ≤30%"校验，防整段长句里偶含系统动词被误吞。
+ */
 export function parseRule(utterance: string, ctx: RuleContext = {}): RuleParseResult | null {
   const t0 = performance.now()
   const trimmed = utterance.trim()
@@ -609,17 +259,6 @@ export function parseRule(utterance: string, ctx: RuleContext = {}): RuleParseRe
     const cons = new Consumption(tokens)
     const hit = template(trimmed, tokens, cons, ctx)
     if (hit === null) continue
-    if (hit === 'clarify-no-focus') {
-      return {
-        source: 'rule',
-        intent: 'clarify',
-        ops: [],
-        say: NO_FOCUS_SAY,
-        confidence: 1.0,
-        latencyMs: performance.now() - t0,
-        template: 'target-missing',
-      }
-    }
     if (!cons.ratioOk()) continue // 成段未理解内容 → 宁可升级 LLM 也不猜（§4.1）
     return {
       source: 'rule',
