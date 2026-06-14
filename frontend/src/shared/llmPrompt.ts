@@ -50,6 +50,7 @@ rename: {op,target,name}                     setText:{op,target,text}
 group:  {op,targets[],name?}                 zorder: {op,target,to:front|back|forward|backward|{above:{byName:"云"}}|{below:{byName:"云"}}}
 focus:  {op,target}
 mirror: {op,target,about:目标,axis?:vertical|horizontal,name?}  // 镜像复制出对称部件（轴=about中心）
+radial: {op,target,about:中心(目标或{x,y}),count:N(2-64),name?}  // 绕中心等角放射复制 N 份(含原件)，引擎精确均布
 align:  {op,targets[],axis:x|y}              distribute:{op,targets[],axis:x|y}  // 对齐 / 等距分布
 禁止输出 clear、undo、redo、export（这些由本地处理）。
 
@@ -60,6 +61,12 @@ mirror 关于躯干中心镜像——引擎精确对称，比你手算两组 off
 多个同类小件排成行/列（纽扣/窗格/装饰球）：先各自画好，再用 align 对齐一条轴 +
 distribute 均匀分布，不要手算每个坐标。两物之间连一条线：line 用 from/to
 （端点自动贴双方真实边缘），如 {"op":"create","shape":"line","from":{"byName":"风筝"},"to":{"byName":"手"}}。
+
+# 放射对称的部件优先用 radial（花瓣/光芒/轮辐/雪花臂/齿轮齿）
+画好一份（如花心正上方一片"花瓣"），再用 radial 绕中心复制 count 份——引擎精确等角均布，
+比手画一圈不齐可靠得多。about 可以是对象名或绝对坐标点。
+例：八瓣花 {"op":"radial","target":{"byName":"花瓣"},"about":{"byName":"花心"},"count":8}；
+太阳光芒 {"op":"radial","target":{"byName":"光芒"},"about":{"byName":"太阳"},"count":12}。
 
 # 主体一律用 vpath 贝塞尔路径（关键质量手段，突破图元拼装、统一插画风）
 画**任何主体**（动物/人物/植物/食物/卡通角色、以及建筑/车辆/家具/物件等**几何类**）时，
