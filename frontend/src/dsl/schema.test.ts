@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseOp, parseOps } from './schema'
+import { parseOp, parseOps, safeColor } from './schema'
 
 describe('合法 Op（协议 §1.4）', () => {
   const cases: Array<[string, unknown]> = [
@@ -119,6 +119,17 @@ describe('事务（parseOps，协议 §1.5）', () => {
     const r = parseOps([{ op: 'undo' }, { op: 'paint' }])
     expect(r.ok).toBe(false)
     if (!r.ok) expect(r.error).toContain('1')
+  })
+})
+
+describe('safeColor（颜色边界降级）', () => {
+  // 注意：颜色降级是浏览器侧行为（CSS.supports 存在时生效）。
+  // node/vitest 环境无 CSS 全局 → safeColor 透传原值，确保测试环境下 schema 不修改输入。
+  it('合法色透传（node 环境无 CSS.supports，始终透传）', () => {
+    expect(safeColor('#87CEEB')).toBe('#87CEEB')
+  })
+  it('单字符 hex 在 node 环境透传（CSS.supports 不存在）', () => {
+    expect(safeColor('#a')).toBe('#a')
   })
 })
 

@@ -42,8 +42,19 @@ export const anchorSchema = z.enum([
 ])
 export type Anchor = z.infer<typeof anchorSchema>
 
+/** CSS 颜色合法性兜底：LLM 偶发吐中文色名/坏 hex（如 '#a'），会让 canvas addColorStop 抛 SyntaxError
+ *  → 渲染重建中断、后续部件全消失（曾致"只剩嘴"）。在数据边界把非法色降级为安全色，部件仍可见。
+ *  仅浏览器运行时启用（CSS.supports 存在）；node/测试环境无 CSS → 透传（渲染层 safeBake 兜底）。 */
+const FALLBACK_COLOR = '#cccccc'
+export function safeColor(c: string): string {
+  if (typeof CSS !== 'undefined' && typeof CSS.supports === 'function') {
+    return CSS.supports('color', c) ? c : FALLBACK_COLOR
+  }
+  return c
+}
+
 /** CSS 颜色串；中文颜色词在理解层完成映射（规格 §2.1），到达 DSL 时已是 CSS 值 */
-export const colorSchema = z.string().min(1)
+export const colorSchema = z.string().min(1).transform(safeColor)
 export type Color = z.infer<typeof colorSchema>
 
 /** v1.6 渐变填充（天空/水面/光晕等"好看"场景）：两色线性渐变，angle 度 0=左→右 90=上→下 */
