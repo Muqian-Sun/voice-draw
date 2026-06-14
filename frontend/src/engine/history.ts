@@ -15,7 +15,7 @@ import type { Op } from '../dsl'
 import type { EngineError, ExecOutcome } from './interpreter'
 import { executeTransaction } from './interpreter'
 import type { SceneState } from './scene'
-import { createEmptyScene } from './scene'
+import { createEmptyScene, isBackgroundObject } from './scene'
 
 export const MAX_UNDO_DEPTH = 50
 
@@ -108,21 +108,82 @@ export function executeWithHistory(h: HistoryState, ops: Op[], opts: ExecuteOpti
   return { history: { scene, undoStack, redoStack: [] }, ...r, state: scene }
 }
 
-/** llm-plan 自动编组（§5.1）：base 之后新建的对象（createdSeq > base.seq）编为一组 */
+/**
+ * llm-plan 自动编组（§5.1）：base 之后新建的对象（createdSeq > base.seq）编为一组。
+ *
+ * 背景层隔离（修复"整组 move 纹丝不动"根因）：
+ * - 背景对象（isBackgroundObject 为真）统一打 background:true 标记；
+ * - 背景对象不纳入主体组（groupId 不被覆写为主体名）；
+ *   若场景里本次只有背景对象（如 orchestrate.ts 专门调用 applyAutoGroup(·,·,'背景')），
+ *   则按正常逻辑给背景对象赋 groupId（保持多主体路径原有行为不变）；
+ * - 主体组门槛按**非背景对象数**判定（< 2 时不编组）；
+ * - 即使非背景对象不足 2 个不编组，背景对象仍打 background:true 标记。
+ * - 双保险：interpreter.ts 的 membersOf 也通过 !o.background 过滤，
+ *   即使背景万一带了 groupId，几何操作也不会波及它。
+ */
 export function applyAutoGroup(base: SceneState, scene: SceneState, autoGroupName: string): SceneState {
   const created = scene.objects.filter((o) => o.createdSeq > base.seq)
-  if (created.length < 2) return scene
-  const taken = new Set<string>(
-    scene.objects.flatMap((o) => [o.groupId, o.name]).filter((x): x is string => x !== undefined),
-  )
-  let name = autoGroupName
-  for (let i = 2; taken.has(name); i++) name = `${autoGroupName}${i}`
-  const ids = new Set(created.map((o) => o.id))
+  // 区分背景对象与主体部件
+  const bgObjects = created.filter(isBackgroundObject)
+  const subjectParts = created.filter((o) => !isBackgroundObject(o))
+
+  // 是否有主体部件（非背景）
+  const hasSubjects = subjectParts.length > 0
+  // 是否有足够主体部件编组
+  const canGroup = subjectParts.length >= 2
+
+  // 若本次新建全是背景对象（无主体部件），按原始逻辑全部编为 autoGroupName 组（如 orchestrate.ts 画背景时）
+  if (!hasSubjects) {
+    if (bgObjects.length === 0) return scene
+    // 全背景路径：打 background 标记 + 正常编组（保留原行为，如 groupId='背景'）
+    const taken = new Set<string>(
+      scene.objects.flatMap((o) => [o.groupId, o.name]).filter((x): x is string => x !== undefined),
+    )
+    let groupName = autoGroupName
+    for (let i = 2; bgObjects.length >= 2 && taken.has(groupName); i++) groupName = `${autoGroupName}${i}`
+    const bgIds = new Set(bgObjects.map((o) => o.id))
+    return {
+      ...scene,
+      objects: scene.objects.map((o) =>
+        bgIds.has(o.id)
+          ? { ...o, background: true, groupId: bgObjects.length >= 2 ? groupName : undefined }
+          : o,
+      ),
+      // 背景独立帧不切换焦点粒度
+      focusScope: scene.focusScope,
+    }
+  }
+
+  // 混合路径（主体 + 可能有背景）：背景打标但不纳入主体组
+  const bgIds = new Set(bgObjects.map((o) => o.id))
+
+  // 生成不冲突的主体组名（只在 canGroup 时有意义）
+  let groupName = autoGroupName
+  if (canGroup) {
+    const taken = new Set<string>(
+      scene.objects.flatMap((o) => [o.groupId, o.name]).filter((x): x is string => x !== undefined),
+    )
+    for (let i = 2; taken.has(groupName); i++) groupName = `${autoGroupName}${i}`
+  }
+
+  const subjectIds = new Set(subjectParts.map((o) => o.id))
+
   // 刚画完整组 → 焦点粒度=组（"它"=整只猫；§5.1 v1.1）
   return {
     ...scene,
-    objects: scene.objects.map((o) => (ids.has(o.id) ? { ...o, groupId: name } : o)),
-    focusScope: 'group',
+    objects: scene.objects.map((o) => {
+      if (bgIds.has(o.id)) {
+        // 背景对象：打标记，不覆写 groupId（背景不属于主体组）
+        return { ...o, background: true }
+      }
+      if (canGroup && subjectIds.has(o.id)) {
+        // 主体部件：编入主体组
+        return { ...o, groupId: groupName }
+      }
+      return o
+    }),
+    // 有主体编组才切换焦点粒度，否则保持原状
+    focusScope: canGroup ? 'group' : scene.focusScope,
   }
 }
 

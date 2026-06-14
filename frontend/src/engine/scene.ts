@@ -7,6 +7,10 @@
  */
 import type { Anchor, ShapeKind, TargetSelector } from '../dsl'
 
+/** 画布逻辑尺寸（与 nlu/orchestrate.ts backgroundOps 注释保持一致） */
+export const CANVAS_W = 1024
+export const CANVAS_H = 768
+
 export interface SceneObject {
   id: string // "circle#1"，按形状独立递增
   name?: string
@@ -50,6 +54,11 @@ export interface SceneObject {
     gap?: number
   }
   createdSeq: number // 全局创建序号，byQuery 的 ordinal 依据
+  /**
+   * 背景层标记（引擎编组阶段打标；不来自 LLM DSL 输出，旧存档无此字段 = 非背景，降级安全）。
+   * 背景对象不编入主体 groupId，几何操作（整组 move/resize 等）天然不波及。
+   */
+  background?: boolean
 }
 
 export interface SceneState {
@@ -147,4 +156,16 @@ export function getBBox(o: SceneObject): [number, number, number, number] {
 export function getCenter(o: SceneObject): { x: number; y: number } {
   const [bx, by, bw, bh] = getBBox(o)
   return { x: bx + bw / 2, y: by + bh / 2 }
+}
+
+/**
+ * 背景层判据（通用几何，不依赖名字）：横贯画布全宽的大色块矩形。
+ * 天空/地面/海水/沙地等都满足（实测：背景天空 1024×460、背景地面 1024×308）；
+ * vpath/ellipse 主体一律 false，小装饰 rect 也 false。
+ * 判断阈值：宽度 ≥ 画布宽度 85%，且面积 ≥ 画布面积 15%。
+ */
+export function isBackgroundObject(o: SceneObject): boolean {
+  if (o.shape !== 'rect') return false
+  const [, , w, h] = getBBox(o)
+  return w >= CANVAS_W * 0.85 && w * h >= CANVAS_W * CANVAS_H * 0.15
 }
