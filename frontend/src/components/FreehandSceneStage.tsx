@@ -17,7 +17,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
 import { getStroke } from 'perfect-freehand'
 import { CANVAS_WIDTH, CANVAS_HEIGHT } from '../dsl'
 import { getBBox, type SceneObject, type SceneState } from '../engine/scene'
-import { objectToStrokes } from '../freehand/fromScene'
+import { objectToStrokes, vpathToStrokes } from '../freehand/fromScene'
 import {
   cumulativeLengths,
   densifyLinear,
@@ -111,10 +111,10 @@ function prepareStroke(s: Stroke, seed: number): Prepared {
 }
 
 const fillable = (p: Prepared) => p.fillPath.length >= 2
-// 时长加帽：大面积（满画布背景 fillLen 可达 ~8万px）按速度算会到几十秒，封顶到 ≤1.2s；
-// 描边同理封顶 ≤1.1s。小件仍有下限保证看得清运笔，不会一闪而过。
-const fillDur = (p: Prepared) => Math.min(1.2, Math.max(0.3, p.fillLen / FILL_SPEED))
-const drawDur = (p: Prepared) => Math.min(1.1, Math.max(0.12, p.total / SPEED))
+// 时长加帽：每件封顶，避免 plan 多部件（如 vpath 主体 10~20 件）逐笔累计到几十秒——
+// 目标整幅"十几秒"画完。填色是大头故帽更低；小件仍有下限保证看得清运笔，不一闪而过。
+const fillDur = (p: Prepared) => Math.min(0.6, Math.max(0.28, p.fillLen / FILL_SPEED))
+const drawDur = (p: Prepared) => Math.min(0.7, Math.max(0.12, p.total / SPEED))
 
 /** 描周界：闭合形描线（直边保直、圆保圆），开放笔走 perfect-freehand 变宽墨带 */
 function paintStroke(tctx: CanvasRenderingContext2D, p: Prepared, L: number): void {
@@ -238,7 +238,9 @@ function sigOf(o: SceneObject): string {
 }
 
 function prepareObject(o: SceneObject): Prepared[] {
-  return objectToStrokes(o).map((s, i) => prepareStroke(s, (o.z + 1) * 0x9e3779b1 + i))
+  // vpath：把 d 采样成轮廓折线笔触（逐笔手绘动画用）；其余图元走组件引擎拆解
+  const strokes = o.shape === 'vpath' ? vpathToStrokes(o) : objectToStrokes(o)
+  return strokes.map((s, i) => prepareStroke(s, (o.z + 1) * 0x9e3779b1 + i))
 }
 
 /** 线性渐变（schema：angle 0=左→右 90=上→下），跨给定 bbox 铺设 */
@@ -502,6 +504,7 @@ interface QueueItem {
   sig: string
   prepared: Prepared[]
   pattern?: NonNullable<SceneObject['pattern']> // v1.7 纹理：落定时叠在底色上
+  obj?: SceneObject // vpath：落定时改走清晰 Path2D（drawVPath），故需对象本体
 }
 
 interface AnimState {
@@ -509,6 +512,7 @@ interface AnimState {
   sig: string
   prepared: Prepared[]
   pattern?: NonNullable<SceneObject['pattern']>
+  obj?: SceneObject
   strokeI: number
   mode: 'draw' | 'fill' | 'travel'
   drawn: number
@@ -592,6 +596,7 @@ export const FreehandSceneStage = forwardRef<FreehandCaptureHandle, { scene: Sce
         sig: item.sig,
         prepared: item.prepared,
         pattern: item.pattern,
+        obj: item.obj,
         strokeI: 0,
         mode: 'draw',
         drawn: 0,
@@ -602,10 +607,15 @@ export const FreehandSceneStage = forwardRef<FreehandCaptureHandle, { scene: Sce
       }
     }
 
-    // 落定整个对象：逐笔烘焙进 committed（含纹理叠加），记签名
+    // 落定整个对象：vpath 落定转清晰 Path2D（drawVPath，出渐变/投影最终质感）；
+    // 其余图元逐笔烘焙进 committed（含纹理叠加）。记签名。
     const bakeAnim = (a: AnimState) => {
-      for (const p of a.prepared) bakeStroke(cctx, p)
-      if (a.pattern) overlayPattern(cctx, a.prepared, a.pattern) // v1.7 纹理叠在底色上
+      if (a.obj && a.obj.shape === 'vpath') {
+        bakeObject(cctx, a.obj) // 手绘轨迹只用于过程动画，落定换清晰矢量
+      } else {
+        for (const p of a.prepared) bakeStroke(cctx, p)
+        if (a.pattern) overlayPattern(cctx, a.prepared, a.pattern) // v1.7 纹理叠在底色上
+      }
       bakedSigRef.current.set(a.id, a.sig)
     }
 
@@ -741,16 +751,24 @@ export const FreehandSceneStage = forwardRef<FreehandCaptureHandle, { scene: Sce
     for (const o of objs) {
       const sig = sigOf(o)
       if (baked.get(o.id) === sig) continue // 已落定且未变
-      // 即时烘焙（不走逐笔动画）：vpath 清晰矢量 + 文字 + 背景（渐变矩形/满宽大矩形）。
-      // 关键修复：背景 z 最低，若走动画队列会在主体（已即时落定）之后铺满、把主体盖掉（"画一半清空"）；
-      // 故背景一律即时落定，按 z 序排在主体之下。逐笔动画只留给前景小图元。
-      // 文字也即时落定：自由画笔不拆字形（objectToStrokes 对 text 返回空），走动画队列会被当空笔触
-      // 跳过、标记已烘焙却从未画进 committed → 文字永远不显示（v2.0 换引擎回归）。
-      const instant =
-        o.shape === 'vpath' || o.shape === 'text' || (o.shape === 'rect' && (o.gradient !== undefined || getBBox(o)[2] >= 0.85 * W))
-      if (instant) {
+      // 文字与背景大块即时烘焙（不走逐笔动画）：
+      //  - 背景 z 最低，若走动画队列会在主体（已落定）之后铺满、把主体盖掉（"画一半清空"），故即时排 z 序下；
+      //  - 文字不拆字形（objectToStrokes 对 text 返回空），走队列会被当空笔触跳过而不显示（曾回归），故即时。
+      // vpath 主体不再即时——采样成轮廓折线走逐笔动画（看绘制过程），落定再转清晰矢量（bakeAnim 走 drawVPath）。
+      const isBgRect = o.shape === 'rect' && (o.gradient !== undefined || getBBox(o)[2] >= 0.85 * W)
+      const dropFromQueue = () => {
         const qv = queueRef.current.findIndex((q) => q.id === o.id)
         if (qv >= 0) queueRef.current.splice(qv, 1)
+      }
+      if (o.shape === 'text' || isBgRect) {
+        dropFromQueue()
+        baked.set(o.id, sig)
+        continue
+      }
+      const prepared = prepareObject(o) // vpath→轮廓折线；图元→手绘笔触
+      if (prepared.length === 0) {
+        // 采样失败（如非法 vpath d）→ 即时清晰矢量兜底（committed 重建走 bakeObject→drawVPath），避免不显示
+        dropFromQueue()
         baked.set(o.id, sig)
         continue
       }
@@ -760,7 +778,7 @@ export const FreehandSceneStage = forwardRef<FreehandCaptureHandle, { scene: Sce
       if (qi >= 0 && queueRef.current[qi].sig === sig) continue // 已在队列且一致
       baked.delete(o.id)
       if (qi >= 0) queueRef.current.splice(qi, 1)
-      queueRef.current.push({ id: o.id, sig, prepared: prepareObject(o), pattern: o.pattern })
+      queueRef.current.push({ id: o.id, sig, prepared, pattern: o.pattern, obj: o })
       if (a && a.id === o.id) animRef.current = null // 改动正在画的对象 → 重启
     }
 
