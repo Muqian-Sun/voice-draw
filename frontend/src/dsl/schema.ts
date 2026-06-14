@@ -372,6 +372,24 @@ const exportOpSchema = z
   })
   .strict()
 
+// v2.x attach 持久锚定（几何接地 Phase 1，RFC §6）：
+// 建立/重启子件与父件的持久几何关系，引擎按父件真实边缘归位。
+// 全参形式（带 to）：establish + 立即归位；仅 target 形式：按已存关系重新贴附。
+const attachOpSchema = z
+  .object({
+    op: z.literal('attach'),
+    desc: z.string().optional(),
+    target: targetSelectorSchema,
+    // 全参形式：建立锚定关系并立即归位
+    to: targetSelectorSchema.optional(),          // 父件
+    parentAnchor: anchorSchema.optional(),         // 父件的哪条边/角
+    mode: z.enum(['onEdge', 'outside', 'inside', 'between']).optional(),
+    childAnchor: anchorSchema.optional(),          // 子件的哪个点（默认 center）
+    offset: vec2Schema.optional(),
+    gap: z.number().optional(),
+  })
+  .strict()
+
 // v2.x 放射复制：把一个部件绕中心等角复制成 N 份（花瓣/光芒/轮辐/雪花臂/齿轮齿——引擎精确均布，
 // 胜过 LLM 手画一圈不齐）。mirror 的 N 重泛化。
 const radialOpSchema = z
@@ -412,6 +430,7 @@ export const opSchema = z
     clearOpSchema,
     focusOpSchema,
     exportOpSchema,
+    attachOpSchema,
   ])
   .superRefine((op, ctx) => {
     switch (op.op) {
@@ -459,6 +478,18 @@ export const opSchema = z
           ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'style 至少需要一个样式字段' })
         }
         break
+      case 'attach':
+        // 全参形式（带 to）：parentAnchor 和 mode 是必须的
+        if (op.to !== undefined) {
+          if (op.parentAnchor === undefined) {
+            ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'attach 全参形式需要 parentAnchor', path: ['parentAnchor'] })
+          }
+          if (op.mode === undefined) {
+            ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'attach 全参形式需要 mode', path: ['mode'] })
+          }
+        }
+        // 仅 target 形式（不带 to）：不需要额外校验（引擎会检查 anchor 字段是否存在）
+        break
     }
   })
 
@@ -467,6 +498,7 @@ export type CreateOp = Extract<Op, { op: 'create' }>
 export type StyleOp = Extract<Op, { op: 'style' }>
 export type MoveOp = Extract<Op, { op: 'move' }>
 export type ResizeOp = Extract<Op, { op: 'resize' }>
+export type AttachOp = Extract<Op, { op: 'attach' }>
 
 /** 一次解析结果（Op 数组）作为一个事务进 undo 栈（协议 §1.5） */
 export const transactionSchema = z.array(opSchema).min(1)

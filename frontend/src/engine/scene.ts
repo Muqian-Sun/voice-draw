@@ -5,7 +5,7 @@
  * 例外是 points 类图形（line/polyline/path）：points 为相对 (x, y) 的偏移，
  * 其"中心"由 getBBox 计算得出。bbox 不考虑 rotation（规格 §5.5 的简化约定）。
  */
-import type { ShapeKind } from '../dsl'
+import type { Anchor, ShapeKind, TargetSelector } from '../dsl'
 
 export interface SceneObject {
   id: string // "circle#1"，按形状独立递增
@@ -36,6 +36,19 @@ export interface SceneObject {
   rotation: number
   z: number
   groupId?: string
+  /**
+   * 持久锚定关系（几何接地 Phase 1，RFC §6）。
+   * 存储后，attach op 仅 target 形式可据此重新贴附（无需 LLM 重算坐标）。
+   * 老存档无此字段 → undefined，优雅降级（无锚定关系）。
+   */
+  anchor?: {
+    to: TargetSelector      // 逻辑父件（byName/byId）
+    parentAnchor: Anchor    // 父件的哪条边/角
+    mode: 'onEdge' | 'outside' | 'inside' | 'between'
+    childAnchor?: Anchor    // 子件的哪个点贴上去（默认 center，v1 用 bbox 锚点近似）
+    offset?: [number, number]
+    gap?: number
+  }
   createdSeq: number // 全局创建序号，byQuery 的 ordinal 依据
 }
 

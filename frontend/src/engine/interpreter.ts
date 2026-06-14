@@ -424,6 +424,20 @@ function resolvePosition(
   return { ok: true, point: p }
 }
 
+/**
+ * 把 Position spec 解析为绝对中心点（createOp / attach op 共用，RFC §4）。
+ * resolvePosition 的纯导出封装：无 focus（创建时自动布局专用）和 lineAnchor（线类端点锚定专用）参数。
+ * attach op 和所有需要在创建后重新定位的场景使用此函数。
+ */
+export function resolveAnchorPoint(
+  state: SceneState,
+  spec: Position,
+  w: number,
+  h: number,
+): PositionResult {
+  return resolvePosition(state, spec, w, h, undefined, undefined)
+}
+
 // ---------- 单 Op 执行 ----------
 
 type OpResult = { ok: true; state: SceneState; notice?: string } | { ok: false; error: EngineError }
@@ -641,6 +655,40 @@ function rotatePathD(d: string, cx: number, cy: number, deg: number): string {
   }
   let k = 0
   return d.replace(/-?\d*\.?\d+/g, () => String(vals[k++]))
+}
+
+// ---------- attach op 辅助（几何接地 Phase 1，RFC §6） ----------
+
+/** 把 SceneObject.anchor 关系转换为 Position spec（供 resolveAnchorPoint 使用） */
+function buildPositionSpecFromAnchor(anchor: NonNullable<SceneObject['anchor']>): Position {
+  const { to, parentAnchor, mode, offset, gap } = anchor
+  const offsetPart = offset !== undefined ? { offset } : {}
+  if (mode === 'onEdge') {
+    return { ref: to, anchor: parentAnchor, onEdge: true as const, ...(gap !== undefined ? { gap } : {}), ...offsetPart }
+  }
+  if (mode === 'inside') {
+    return { ref: to, anchor: parentAnchor, inside: true as const, ...(gap !== undefined ? { gap } : {}), ...offsetPart }
+  }
+  // outside（默认）
+  return { ref: to, anchor: parentAnchor, ...(gap !== undefined ? { gap } : { gap: DEFAULT_GAP }), ...offsetPart }
+}
+
+/**
+ * 根据新 bbox 中心坐标，计算对象需要的新 (x, y)。
+ * - vpath：d 包含绝对坐标，(x,y) 是平移偏移量；需让 d 的自然 bbox 中心（x=0,y=0 时）+ 偏移 = newCenter
+ * - 其他形状：(x,y) 一般等于 bbox 中心（circle/arc/star 如此），或通过 getCenter 反推偏移
+ */
+function applyPositionToObject(obj: SceneObject, newCenter: Point): Partial<SceneObject> {
+  if (obj.shape === 'vpath') {
+    // vpath 的 (x,y) 是平移量；d 在 x=0,y=0 时的自然 bbox 中心
+    const probe = { ...obj, x: 0, y: 0 }
+    const [bx, by, bw, bh] = getBBox(probe)
+    const naturalCenter = { x: bx + bw / 2, y: by + bh / 2 }
+    return { x: newCenter.x - naturalCenter.x, y: newCenter.y - naturalCenter.y }
+  }
+  // 其他形状：当前 bbox 中心 vs 当前 (x,y) 的差，用来把新中心映射回 (x,y)
+  const cur = getCenter(obj)
+  return { x: obj.x + (newCenter.x - cur.x), y: obj.y + (newCenter.y - cur.y) }
 }
 
 function execOp(state: SceneState, op: Op): OpResult {
@@ -1116,6 +1164,58 @@ function execOp(state: SceneState, op: Op): OpResult {
     case 'export':
       // 引擎无状态变更（history 不入栈）；PNG 下载由前端在事务成功后触发
       return { ok: true, state, notice: '导出 PNG' }
+
+    case 'attach': {
+      // 几何接地 Phase 1（RFC §6）：持久锚定
+      const t = resolveTarget(state, op.target)
+      if (!t.ok) return t
+      const child = t.obj
+
+      // 获取锚定关系：全参形式（op.to 存在）建立新关系；仅 target 形式复用已存关系
+      let anchorRel: NonNullable<typeof child.anchor>
+      if (op.to !== undefined) {
+        // 全参形式：建立锚定关系（superRefine 已校验 parentAnchor 和 mode 必须存在）
+        anchorRel = {
+          to: op.to,
+          parentAnchor: op.parentAnchor!,
+          mode: op.mode!,
+          ...(op.childAnchor !== undefined ? { childAnchor: op.childAnchor } : {}),
+          ...(op.offset !== undefined ? { offset: op.offset } : {}),
+          ...(op.gap !== undefined ? { gap: op.gap } : {}),
+        }
+      } else {
+        // 仅 target 形式：使用已存锚定关系
+        if (child.anchor === undefined) {
+          return { ok: false, error: err('INVALID_OP', '对象没有锚定关系，请提供完整 attach 参数（target + to + parentAnchor + mode）') }
+        }
+        anchorRel = child.anchor
+      }
+
+      // 构建 Position spec（由锚定关系转换为 resolveAnchorPoint 能处理的位置描述）
+      const posSpec = buildPositionSpecFromAnchor(anchorRel)
+
+      // 获取子件尺寸（用 bbox）
+      const [, , childW, childH] = getBBox(child)
+
+      // 解析位置（得到新的 bbox 中心点）
+      const placed = resolveAnchorPoint(state, posSpec, childW, childH)
+      if (!placed.ok) return placed
+      const newCenter = placed.point
+
+      // 计算新的 (x, y)：让子件的 bbox 中心落在 newCenter
+      const posUpdate = applyPositionToObject(child, newCenter)
+
+      // 更新 anchor 字段（写入锚定关系，供后续仅 target reanchor 使用）
+      const patch: Partial<typeof child> = {
+        ...posUpdate,
+        anchor: anchorRel,
+      }
+
+      return {
+        ok: true,
+        state: patchObject(state, child.id, patch),
+      }
+    }
 
     default:
       return { ok: false, error: err('UNSUPPORTED_OP', `操作 ${op.op} 将在后续 PR 支持`) }
