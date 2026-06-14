@@ -52,6 +52,8 @@ function planResp(label: string) {
 /** 构造 mock fetchFn：按 body.mode/stream 返回不同内容
  *  - layout（非流式）：返回 { content: <布局JSON字符串> }（callBackend 格式）
  *  - plan（stream:true）：返回裸 LLM JSON 字符串作为 body（parseWithLlmStream 直接 getReader 读取）
+ *
+ *  注意：背景改为瞬时直接画（不走 LLM），故 plan 请求只有两个角色各自的（layout 1 次 + plan 2 次）。
  */
 function makeFetchFn() {
   const callCount = { layout: 0, plan: 0 }
@@ -74,7 +76,7 @@ function makeFetchFn() {
 
 describe('orchestrateSubplans（mock fetchFn）', () => {
   it('2 个主体 → ok:true，subjectCount===2，对象含各主体 groupId，onScene 被多次调用', async () => {
-    const { fn } = makeFetchFn()
+    const { fn, callCount } = makeFetchFn()
     const baseScene = createEmptyScene()
     const sceneCalls: number[] = []
     let firstPaintFired = false
@@ -109,6 +111,20 @@ describe('orchestrateSubplans（mock fetchFn）', () => {
     const groups = new Set(objects.map((o) => o.groupId).filter(Boolean))
     expect(groups.has('白雪公主')).toBe(true)
     expect(groups.has('小矮人')).toBe(true)
+
+    // 背景不再走 LLM：plan 请求只有两个角色各自的（layout 1 + plan 2，背景不产生 plan 调用）
+    expect(callCount.layout).toBe(1)
+    expect(callCount.plan).toBe(2)
+
+    // 最终场景含背景天空和背景地面两个 rect，且它们属于「背景」组
+    const bgSky = objects.find((o) => o.name === '背景天空')
+    const bgGround = objects.find((o) => o.name === '背景地面')
+    expect(bgSky).toBeDefined()
+    expect(bgGround).toBeDefined()
+    expect(bgSky?.shape).toBe('rect')
+    expect(bgGround?.shape).toBe('rect')
+    expect(bgSky?.groupId).toBe('背景')
+    expect(bgGround?.groupId).toBe('背景')
   })
 
   it('planLayout 失败 → ok:false fallback:true', async () => {
