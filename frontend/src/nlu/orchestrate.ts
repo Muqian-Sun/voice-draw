@@ -9,10 +9,92 @@
  */
 import { applyAutoGroup } from '../engine/history'
 import { createForwardTolerantRunner } from '../engine/forwardRetry'
-import type { SceneState } from '../engine/scene'
+import { type SceneState, getBBox } from '../engine/scene'
 import type { Op } from '../dsl'
 import { type LlmCallContext, parseWithLlmStream } from './llm'
 import { planLayout } from './planner'
+
+/**
+ * 把 SVG path data（M/L/C/Q/Z 绝对坐标，全是 x,y 数对，Z 无数字）按仿射变换：
+ *   新坐标 = scale * (旧坐标 - 轴心) + 目标中心
+ * 偶数下标（0,2,4,…）= x，奇数下标（1,3,5,…）= y。
+ * 假定 d 只含 M/L/C/Q/Z（prompt 已约束），若含 A 弧等奇数参数命令此算法坐标对应会偏移，
+ * 届时需按命令逐参数处理；目前 vpath 子计划 prompt 不允许 A，故安全。
+ */
+function affinePathD(
+  d: string,
+  scale: number,
+  bcx: number,
+  bcy: number,
+  tcx: number,
+  tcy: number,
+): string {
+  let i = -1
+  return d.replace(/-?\d*\.?\d+/g, (n) => {
+    i++
+    const v = parseFloat(n)
+    const out = i % 2 === 0 ? scale * (v - bcx) + tcx : scale * (v - bcy) + tcy
+    return String(Math.round(out * 10) / 10)
+  })
+}
+
+/**
+ * 把 groupId===label 的整组对象等比仿射缩放+平移，使整组包围盒贴合目标框 box（不溢出）。
+ * vpath 走 d 字串仿射（主路径）；非 vpath 图元至少平移到框内中心。
+ */
+function fitGroupToBox(
+  s: SceneState,
+  label: string,
+  box: { cx: number; cy: number; w: number; h: number },
+): SceneState {
+  const members = s.objects.filter((o) => o.groupId === label)
+  if (members.length === 0) return s
+
+  // 整组并集包围盒
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const o of members) {
+    const [bx, by, bw, bh] = getBBox(o)
+    minX = Math.min(minX, bx)
+    minY = Math.min(minY, by)
+    maxX = Math.max(maxX, bx + bw)
+    maxY = Math.max(maxY, by + bh)
+  }
+
+  const gw = Math.max(1, maxX - minX)
+  const gh = Math.max(1, maxY - minY)
+  const bcx = (minX + maxX) / 2
+  const bcy = (minY + maxY) / 2
+  // 等比贴合（哪边先碰到框就停，保证不溢出）
+  const scale = Math.min(box.w / gw, box.h / gh)
+
+  const ids = new Set(members.map((o) => o.id))
+  const objects = s.objects.map((o) => {
+    if (!ids.has(o.id)) return o
+    if (o.d !== undefined) {
+      // vpath：d 直接仿射（x,y 平移视为 0，子计划 vpath 通常 x=0,y=0；保险起见并入计算）
+      const nd = affinePathD(o.d, scale, bcx, bcy, box.cx, box.cy)
+      return { ...o, d: nd, x: 0, y: 0 }
+    }
+    // 非 vpath 图元：中心按同样仿射平移，尺寸等比缩
+    const [ox, oy, ow, oh] = getBBox(o)
+    const ocx = ox + ow / 2
+    const ocy = oy + oh / 2
+    const ncx = scale * (ocx - bcx) + box.cx
+    const ncy = scale * (ocy - bcy) + box.cy
+    const cur = { x: o.x ?? 0, y: o.y ?? 0 }
+    return {
+      ...o,
+      x: cur.x + (ncx - ocx),
+      y: cur.y + (ncy - ocy),
+      ...(o.radius !== undefined ? { radius: o.radius * scale } : {}),
+      ...(o.radiusX !== undefined ? { radiusX: o.radiusX * scale } : {}),
+      ...(o.radiusY !== undefined ? { radiusY: o.radiusY * scale } : {}),
+      ...(o.width !== undefined ? { width: o.width * scale } : {}),
+      ...(o.height !== undefined ? { height: o.height * scale } : {}),
+    }
+  })
+  return { ...s, objects }
+}
 
 /**
  * 按描述关键词选天/地配色，返回 2 个铺满画布的渐变 rect create op。
@@ -92,21 +174,22 @@ export async function orchestrateSubplans(
   let painted = 0
   let firstPaint = false
 
-  // 内部 draw 函数（串行调用，共享闭包 scene）——流式：onOp 每到一个 op 就 push 进 runner（逐 op 渐进出图）
-  const draw = async (prompt: string, label: string): Promise<void> => {
+  // 内部 draw 函数（串行调用，共享闭包 scene）
+  // 角色在画布中心放开画大（prompt 不约束位置/尺寸），finish 后 fitGroupToBox 缩放平移到目标框，
+  // 最后一次性 onScene（避免"画中心闪一下又飞到角落"的视觉抖动）。
+  const draw = async (
+    prompt: string,
+    label: string,
+    box: { cx: number; cy: number; w: number; h: number },
+  ): Promise<void> => {
     const before = scene
     const runner = createForwardTolerantRunner(scene, (op: Op, state: SceneState) => {
       painted++
-      if (!firstPaint) {
-        firstPaint = true
-        cb.onFirstPaint?.()
-      }
       scene = state
-      cb.onScene(state)
+      // 不在此 onScene：角色在画布中心隐形画好，fit 到框后再一次性渲染
       if (op.op === 'create' && op.desc !== undefined) cb.onLog(`▸ ${op.desc}`)
     })
     try {
-      // 流式：onOp 每到一个 op 就 push 进 runner（逐 op 渐进出图）。即便终验未过，已 push 的 op 也保留。
       await parseWithLlmStream(prompt, 'plan', { ...ctx, scene: before }, (op) => runner.push(op))
     } catch (e) {
       cb.onLog(`「${label}」流式异常，保留已画部分`)
@@ -114,7 +197,9 @@ export async function orchestrateSubplans(
     scene = runner.finish().state
     if (scene === before) { cb.onLog(`「${label}」未画成，跳过`); return }
     scene = applyAutoGroup(before, scene, label)
-    cb.onScene(scene)
+    scene = fitGroupToBox(scene, label, box)   // 等比仿射缩放平移到目标框（不溢出）
+    if (!firstPaint) { firstPaint = true; cb.onFirstPaint?.() }
+    cb.onScene(scene)                           // 一次性渲染（已贴好框）
   }
 
   // Step 2: 背景瞬时直接画（不走 LLM 子计划）：渐变天地铺满，让首个角色紧跟 planner 就开始
@@ -138,10 +223,10 @@ export async function orchestrateSubplans(
     const prompt =
       `画一个完整、精致的${s.label}：五官清晰且绝不被头发/帽子遮挡（先画脸、头发只框住脸侧、五官放最上层 zorder）、` +
       `身体四肢俱全（含脚和鞋、手），细节到位、不要省略部件；` +
-      `整体居中于画布坐标(${s.cx},${s.cy})、缩放到约 ${s.w}x${s.h} 的区域内` +
+      `整体画大、居中于画布中心 (512,384)、充分施展细节（不用管它最终摆在哪、多大，我会自动缩放摆放到画面里）` +
       (style !== undefined ? `，画风：${style}` : '') +
       `。只画${s.label}这一个主体，不画背景或其它角色。`
-    await draw(prompt, s.label)
+    await draw(prompt, s.label, { cx: s.cx, cy: s.cy, w: s.w, h: s.h })
   }
 
   // Step 4: 全部失败时回退

@@ -2,7 +2,7 @@
  * orchestrate 单测（按角色拆子计划设计 Phase 1 PR-2）
  */
 import { describe, expect, it, vi } from 'vitest'
-import { createEmptyScene } from '../engine/scene'
+import { createEmptyScene, getBBox } from '../engine/scene'
 import { looksMultiSubject, orchestrateSubplans } from './orchestrate'
 
 // ---------- looksMultiSubject ----------
@@ -36,14 +36,31 @@ const LAYOUT_RESP = JSON.stringify({
   ],
 })
 
-/** plan 响应 — 简单两个 create op，带 desc（plan 校验需要） */
+/**
+ * plan 响应 — 两个 vpath create op（带 d，走 fitGroupToBox 的 vpath 支）。
+ * 头部：以 (512,384) 为中心、半径 60 的近似圆（M/L 方形近似）。
+ * 身体：头下方矩形路径。
+ * 坐标都在画布中心附近，方便验证 fit 后落进目标框。
+ */
 function planResp(label: string) {
   return JSON.stringify({
     intent: 'ops',
     confidence: 0.95,
     ops: [
-      { op: 'create', shape: 'circle', size: 40, name: `${label}-头`, desc: `${label}的头` },
-      { op: 'create', shape: 'rect', width: 60, height: 90, name: `${label}-身`, desc: `${label}的身体` },
+      {
+        op: 'create',
+        shape: 'vpath',
+        name: `${label}-头`,
+        d: 'M 452 324 L 572 324 L 572 444 L 452 444 Z',
+        desc: `${label}的头`,
+      },
+      {
+        op: 'create',
+        shape: 'vpath',
+        name: `${label}-身`,
+        d: 'M 482 444 L 542 444 L 542 534 L 482 534 Z',
+        desc: `${label}的身体`,
+      },
     ],
     say: `${label}画好了`,
   })
@@ -74,8 +91,14 @@ function makeFetchFn() {
   return { fn, callCount }
 }
 
+/** 布局目标框（从 LAYOUT_RESP 中取出，用于 bbox-in-box 断言） */
+const SUBJECT_BOXES: Record<string, { cx: number; cy: number; w: number; h: number }> = {
+  '白雪公主': { cx: 300, cy: 384, w: 200, h: 400 },
+  '小矮人': { cx: 700, cy: 450, w: 160, h: 280 },
+}
+
 describe('orchestrateSubplans（mock fetchFn）', () => {
-  it('2 个主体 → ok:true，subjectCount===2，对象含各主体 groupId，onScene 被多次调用', async () => {
+  it('2 个主体 → ok:true，subjectCount===2，对象含各主体 groupId，fit 后 bbox 落在目标框内', async () => {
     const { fn, callCount } = makeFetchFn()
     const baseScene = createEmptyScene()
     const sceneCalls: number[] = []
@@ -97,10 +120,11 @@ describe('orchestrateSubplans（mock fetchFn）', () => {
 
     expect(result.subjectCount).toBe(2)
 
-    // onScene 至少在每个主体绘制时被调用（每 op 一次 + 每角色 applyAutoGroup 一次）
-    expect(sceneCalls.length).toBeGreaterThan(0)
+    // 新逻辑：每个角色 fit 后一次性 onScene（不再每 op 一次）。
+    // 背景瞬时 2 次 + 白雪公主 1 次 + 小矮人 1 次 = 至少 4 次。
+    expect(sceneCalls.length).toBeGreaterThanOrEqual(2)
 
-    // 首帧回调触发
+    // 首帧回调触发（首角色 fit 完后触发）
     expect(firstPaintFired).toBe(true)
 
     // 最终场景含各主体对象；每个主体应当有各自的 groupId（applyAutoGroup 已按 label 编组）
@@ -111,6 +135,29 @@ describe('orchestrateSubplans（mock fetchFn）', () => {
     const groups = new Set(objects.map((o) => o.groupId).filter(Boolean))
     expect(groups.has('白雪公主')).toBe(true)
     expect(groups.has('小矮人')).toBe(true)
+
+    // fit-to-box 断言：每个角色的整组并集 bbox 应落在目标框内（含小容差 1px）
+    const TOL = 1
+    for (const [label, box] of Object.entries(SUBJECT_BOXES)) {
+      const members = objects.filter((o) => o.groupId === label)
+      if (members.length === 0) continue
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+      for (const o of members) {
+        const [bx, by, bw, bh] = getBBox(o)
+        minX = Math.min(minX, bx); minY = Math.min(minY, by)
+        maxX = Math.max(maxX, bx + bw); maxY = Math.max(maxY, by + bh)
+      }
+      const gw = maxX - minX
+      const gh = maxY - minY
+      // 整组宽高不超过目标框（等比缩放保证）
+      expect(gw).toBeLessThanOrEqual(box.w + TOL)
+      expect(gh).toBeLessThanOrEqual(box.h + TOL)
+      // 整组中心接近目标框中心（平移到位）
+      const gcx = (minX + maxX) / 2
+      const gcy = (minY + maxY) / 2
+      expect(Math.abs(gcx - box.cx)).toBeLessThanOrEqual(box.w / 2 + TOL)
+      expect(Math.abs(gcy - box.cy)).toBeLessThanOrEqual(box.h / 2 + TOL)
+    }
 
     // 背景不再走 LLM：plan 请求只有两个角色各自的（layout 1 + plan 2，背景不产生 plan 调用）
     expect(callCount.layout).toBe(1)
