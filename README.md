@@ -2,7 +2,7 @@
 
 > 七牛云 1024 创作节 · 题目二。不使用鼠标键盘，仅通过语音指令完成绘图创作。
 
-📺 **Demo 视频**：录制完成后填入（bilibili 外链，无登录可播放）
+📺 **Demo 视频**：https://www.bilibili.com/video/BV1nkJK6qEJN/ （bilibili，无登录可播放）
 
 ## 功能演示
 
