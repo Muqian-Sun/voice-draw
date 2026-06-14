@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Op } from '../dsl'
 import { parseOp } from '../dsl/schema'
-import { executeTransaction } from './interpreter'
+import { executeTransaction, resolveTarget } from './interpreter'
 import { createEmptyScene, getBBox, getCenter, type SceneState } from './scene'
 
 /** 测试辅助：从空场景执行事务，断言无错误 */
@@ -902,5 +902,57 @@ describe('vpath at 相对定位（v2.1）', () => {
     ])
     expect(r.error?.code).toBe('TARGET_NOT_FOUND')
     expect(r.state.objects).toHaveLength(0) // 未建出对象
+  })
+})
+
+describe('「组名/部件名」限定解析（多角色多轮编辑消歧）', () => {
+  // 构建：两个角色组，每组都有一个叫"裙子"的部件
+  const multiChar = () => {
+    const s = run([
+      { op: 'create', shape: 'circle', name: '裙子', fill: '#FF0000', at: { x: 200, y: 300 }, size: 30 },
+      { op: 'create', shape: 'circle', name: '头', fill: '#FFD700', at: { x: 200, y: 200 }, size: 25 },
+      { op: 'group', targets: [{ byName: '裙子' }, { byName: '头' }], name: '白雪公主' },
+      { op: 'create', shape: 'circle', name: '裙子', fill: '#0000FF', at: { x: 700, y: 300 }, size: 30 },
+      { op: 'create', shape: 'circle', name: '头', fill: '#888888', at: { x: 700, y: 200 }, size: 25 },
+      { op: 'group', targets: [{ byQuery: { shape: 'circle', fill: '#0000FF' } }, { byQuery: { shape: 'circle', fill: '#888888' } }], name: '小矮人1' },
+    ])
+    return s
+  }
+
+  it('byName "白雪公主/裙子" 精确命中白雪公主组内的裙子（fill=#FF0000）', () => {
+    const s = multiChar()
+    const r = resolveTarget(s, { byName: '白雪公主/裙子' })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.obj.fill).toBe('#FF0000')
+    expect(r.obj.groupId).toBe('白雪公主')
+  })
+
+  it('byName "裙子"（无组限定）→ AMBIGUOUS_TARGET（有两个，行为不变）', () => {
+    const s = multiChar()
+    const r = resolveTarget(s, { byName: '裙子' })
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.error.code).toBe('AMBIGUOUS_TARGET')
+  })
+
+  it('byName "白雪公主/不存在" → 回退普通名查找 → TARGET_NOT_FOUND（组名写错容错）', () => {
+    const s = multiChar()
+    const r = resolveTarget(s, { byName: '白雪公主/不存在' })
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.error.code).toBe('TARGET_NOT_FOUND')
+  })
+
+  it('style op 通过 "白雪公主/裙子" 只改白雪公主的裙子，不影响小矮人的裙子（无组提升）', () => {
+    const s0 = multiChar()
+    // 找到小矮人裙子的初始颜色
+    const other = s0.objects.find((o) => o.name === '裙子' && o.groupId === '小矮人1')!
+    const otherFillBefore = other.fill
+    const s = run([{ op: 'style', target: { byName: '白雪公主/裙子' }, fill: '#00FF00' }], s0)
+    const snowWhiteDress = s.objects.find((o) => o.name === '裙子' && o.groupId === '白雪公主')!
+    const dwarfDress = s.objects.find((o) => o.name === '裙子' && o.groupId === '小矮人1')!
+    expect(snowWhiteDress.fill).toBe('#00FF00') // 白雪公主裙子变绿
+    expect(dwarfDress.fill).toBe(otherFillBefore) // 小矮人裙子不变
   })
 })
